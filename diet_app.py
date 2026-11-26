@@ -1,4 +1,4 @@
-# diet_app.py  (version 9)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 10)  - run with:  streamlit run diet_app.py
 # 5 pages: Home, Add Food, My Day, Progress, Profile. Invite-code lock first.
 import csv
 import json
@@ -52,11 +52,12 @@ if not st.session_state.splash_done:
     st.session_state.splash_done = True
 
 # ---------------------------------------------------------------- invite lock
-DEFAULT_CODES = ["FITNESS123"]
+# Codes live ONLY in Streamlit secrets (never in this file):
+#   .streamlit/secrets.toml  ->  invite_codes = ["CODE1", "CODE2"]
 
 
 def get_codes():
-    codes = list(DEFAULT_CODES)
+    codes = []
     try:
         extra = st.secrets["invite_codes"]
         if isinstance(extra, str):
@@ -94,10 +95,12 @@ if not st.session_state.unlocked:
 
 if not st.session_state.unlocked:
     st.title("🔒 " + APP_NAME)
+    if not get_codes():
+        st.warning("App locked. Ask the owner for a code.")
     st.write("This app is invite only. Type your invite code.")
     code = st.text_input("Invite code", type="password")
     if st.button("Open the app", use_container_width=True):
-        if code.strip().upper() in get_codes():
+        if code.strip() and code.strip().upper() in get_codes():
             st.session_state.unlocked = True
             write_key_param(code.strip().upper())
             st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
