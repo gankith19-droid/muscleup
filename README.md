@@ -1,1 +1,3 @@
-# muscleup
+ streamlit
+pandas
+pyarrow
