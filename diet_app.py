@@ -1,6 +1,7 @@
-# diet_app.py  (version 18)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 19)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
+import hashlib
 import json
 import os
 import time
@@ -1100,20 +1101,6 @@ def make_slug(name):
     return out[:30]
 
 
-def existing_users():
-    users = []
-    try:
-        for fn in sorted(os.listdir(BASE_DIR)):
-            for pre, ext in (("diet_profile_", ".json"), ("diet_log_", ".csv"), ("diet_weights_", ".csv"), ("diet_workout_", ".csv"), ("diet_water_", ".csv"), ("diet_measure_", ".csv"), ("diet_rating_", ".csv")):
-                if fn.startswith(pre) and fn.endswith(ext):
-                    slug = fn[len(pre):-len(ext)]
-                    if slug and slug not in users:
-                        users.append(slug)
-    except Exception:
-        pass
-    return sorted(users)
-
-
 def clean_name(name):
     return " ".join(str(name).strip().split())[:30]
 
@@ -1138,17 +1125,57 @@ def write_user_param(name):
         pass  # old Streamlit: person is remembered for this session only
 
 
+# ------------------------------------------------------------------ PIN login
+PIN_MAX_FAILS = 5
+PIN_LOCK_MINUTES = 15
+
+
+def pin_path(slug):
+    return os.path.join(BASE_DIR, "diet_pin_%s.json" % slug)
+
+
+def hash_pin(pin, salt):
+    return hashlib.pbkdf2_hmac("sha256", str(pin).encode("utf-8"), str(salt).encode("utf-8"), 60000).hex()
+
+
+def read_pin_record(slug):
+    try:
+        if os.path.exists(pin_path(slug)):
+            with open(pin_path(slug), "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            if isinstance(rec, dict) and rec.get("hash") and rec.get("salt"):
+                return rec
+    except Exception:
+        pass
+    return st.session_state.get("pin_mem", {}).get(slug)
+
+
+def write_pin_record(slug, rec):
+    try:
+        with open(pin_path(slug), "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+        return
+    except Exception:
+        pass
+    # could not write a file here (for example read-only disk): keep it for this session only
+    mem = st.session_state.get("pin_mem", {})
+    mem[slug] = rec
+    st.session_state.pin_mem = mem
+
+
 def choose_user(name):
     name = clean_name(name)
     if not make_slug(name):
         return False
     st.session_state.user = name
+    st.session_state.auth_name = ""
     write_user_param(name)
     return True
 
 
 def switch_user():
     st.session_state.user = ""
+    st.session_state.auth_name = ""
     st.session_state.loaded_slug = ""
     st.session_state.page = "Home"
     st.session_state.guide_started = False
@@ -1157,35 +1184,88 @@ def switch_user():
     write_user_param("")
 
 
+def forget_name():
+    st.session_state.auth_name = ""
+    write_user_param("")
+
+
+def rerun_app():
+    st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+
+
 if "user" not in st.session_state:
     st.session_state.user = ""
+if "auth_name" not in st.session_state:
+    st.session_state.auth_name = ""
 if "loaded_slug" not in st.session_state:
     st.session_state.loaded_slug = ""
 if "page" not in st.session_state:
     st.session_state.page = "Home"
 
 if not st.session_state.user:
-    remembered = read_user_param()
-    if remembered:
-        choose_user(remembered)
+    # a name in the web address only fills in the name. The PIN is still needed once per session.
+    if not st.session_state.auth_name:
+        remembered = read_user_param()
+        if remembered and make_slug(remembered):
+            st.session_state.auth_name = remembered
 
 if not st.session_state.user:
     st.title("👋 " + APP_NAME)
-    st.write("Type your name to start.")
-    typed = st.text_input("Your name")
-    if st.button("Start", use_container_width=True, type="primary"):
-        if choose_user(typed):
-            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+    aname = st.session_state.auth_name
+    if not aname:
+        # ---- step 1: type your name
+        st.write("Type your name to start.")
+        typed = st.text_input("Your name", max_chars=30)
+        if st.button("Continue", use_container_width=True, type="primary"):
+            if make_slug(typed):
+                st.session_state.auth_name = clean_name(typed)
+                rerun_app()
+            else:
+                st.error("Please type your name (letters or numbers).")
+        st.caption("Your food and workout data is private with your PIN.")
+        st.stop()
+    # ---- step 2: PIN
+    aslug = make_slug(aname)
+    rec = read_pin_record(aslug)
+    st.subheader("Hi, %s" % aname)
+    if rec is None:
+        st.write("Make a 4-digit PIN. You will use it to open your data.")
+        p1 = st.text_input("New PIN (4 digits)", type="password", max_chars=4, key="pin_new1")
+        p2 = st.text_input("Type the PIN again", type="password", max_chars=4, key="pin_new2")
+        if st.button("Save PIN and start", use_container_width=True, type="primary"):
+            if not (p1.isdigit() and len(p1) == 4):
+                st.error("The PIN must be exactly 4 numbers.")
+            elif p1 != p2:
+                st.error("The two PINs are not the same.")
+            else:
+                salt = os.urandom(8).hex()
+                write_pin_record(aslug, {"salt": salt, "hash": hash_pin(p1, salt), "fails": 0, "locked_until": 0})
+                choose_user(aname)
+                rerun_app()
+        st.caption("Remember this PIN. If you forget it, your data cannot be opened.")
+    else:
+        now_ts = time.time()
+        locked_left = float(rec.get("locked_until", 0) or 0) - now_ts
+        if locked_left > 0:
+            st.error("Too many tries. Please wait %d minutes and try again." % (int(locked_left // 60) + 1))
         else:
-            st.error("Please type your name (letters or numbers).")
-    others = existing_users()
-    if others:
-        st.write("Or pick your name:")
-        for slug in others[:30]:
-            if st.button(slug.replace("_", " ").title(), key="pick_" + slug, use_container_width=True):
-                choose_user(slug.replace("_", " "))
-                st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-    st.caption("This is only a name, not a password.")
+            pin = st.text_input("Your PIN (4 digits)", type="password", max_chars=4, key="pin_enter")
+            if st.button("Open", use_container_width=True, type="primary"):
+                ok = pin.isdigit() and len(pin) == 4 and hash_pin(pin, rec["salt"]) == rec["hash"]
+                if ok:
+                    rec["fails"] = 0
+                    rec["locked_until"] = 0
+                    write_pin_record(aslug, rec)
+                    choose_user(aname)
+                    rerun_app()
+                else:
+                    rec["fails"] = int(rec.get("fails", 0) or 0) + 1
+                    if rec["fails"] >= PIN_MAX_FAILS:
+                        rec["fails"] = 0
+                        rec["locked_until"] = now_ts + PIN_LOCK_MINUTES * 60
+                    write_pin_record(aslug, rec)
+                    st.error("Name or PIN is wrong.")
+    st.button("← Use a different name", key="pin_back", on_click=forget_name, use_container_width=True)
     st.stop()
 
 # a user is chosen: point the files at this user and load their data
@@ -1213,7 +1293,7 @@ if st.session_state.loaded_slug != slug:
     st.session_state.loaded_slug = slug
     st.session_state.save_ok = True
     st.session_state.page = "Home"
-    # make sure this person shows up in the "pick your name" list
+    # create the profile file on first use
     if not os.path.exists(PROFILE_FILE):
         save_profile(st.session_state.profile)
 # ------------------------------------------------------------------- numbers
