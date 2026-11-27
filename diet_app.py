@@ -1,12 +1,16 @@
-# diet_app.py  (version 20)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 21)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import glob
 import hashlib
+import base64
 import hmac
 import json
 import os
+import re
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -317,6 +321,178 @@ def load_foods():
 
 
 FOODS = load_foods()
+
+
+# ------------------------------------------------------------ photo meal helper
+PHOTO_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+PHOTO_PROMPT = (
+    "You are a nutrition helper for a student in India. Look at this photo of a meal. "
+    "Many meals are Indian or hostel food: rice, dal, sambar, rasam, roti, chapati, paratha, idli, dosa, "
+    "upma, poha, palya, curry, curd, egg, chicken, paneer, etc. "
+    "List EACH visible food item separately and estimate the portion you can see on the plate or bowl. "
+    "Reply with ONLY a JSON list, no other text. Each item must look exactly like: "
+    '{"item": "plain food name", "grams": 150, "calories": 195, "protein": 4.0, "carbs": 42.0, "fat": 0.5} '
+    "grams is the estimated weight of the portion (use ml for drinks as grams). "
+    "calories, protein, carbs and fat are for that whole portion, not per 100 g. "
+    "If the photo has no food, reply with []."
+)
+
+
+def photo_api_key():
+    try:
+        k = st.secrets["gemini_api_key"]
+        k = str(k).strip()
+        return k if k else ""
+    except Exception:
+        return ""
+
+
+def _num(v, default=0.0):
+    try:
+        if isinstance(v, (int, float)):
+            return float(v)
+        m = re.search(r"-?\d+(?:\.\d+)?", str(v).replace(",", ""))
+        return float(m.group(0)) if m else default
+    except Exception:
+        return default
+
+
+def parse_meal_json(text):
+    """Turn the AI reply into a clean list of items. Handles ```json fences and extra words."""
+    if not text:
+        return []
+    t = str(text).strip()
+    t = re.sub(r"```(?:json|JSON)?", "", t).strip()
+    data = None
+    for cand in (t, ):
+        try:
+            data = json.loads(cand)
+            break
+        except Exception:
+            pass
+    if data is None:
+        a, b = t.find("["), t.rfind("]")
+        if a != -1 and b > a:
+            try:
+                data = json.loads(t[a:b + 1])
+            except Exception:
+                data = None
+    if data is None:
+        a, b = t.find("{"), t.rfind("}")
+        if a != -1 and b > a:
+            try:
+                data = json.loads(t[a:b + 1])
+            except Exception:
+                data = None
+    if isinstance(data, dict):
+        lst = None
+        for k in ("items", "foods", "food_items", "meal", "result"):
+            if isinstance(data.get(k), list):
+                lst = data[k]
+                break
+        data = lst if lst is not None else [data]
+    if not isinstance(data, list):
+        return []
+    out = []
+    for d in data:
+        if not isinstance(d, dict):
+            continue
+        name = d.get("item") or d.get("name") or d.get("food") or ""
+        name = str(name).strip()
+        if not name:
+            continue
+        grams = _num(d.get("grams", d.get("weight_g", d.get("quantity_g", 0))))
+        if grams <= 0:
+            continue
+        grams = min(max(grams, 1.0), 3000.0)
+        out.append({
+            "item": name[:60],
+            "grams": round(grams),
+            "kcal": min(max(_num(d.get("calories", d.get("kcal", 0))), 0.0), 5000.0),
+            "protein": min(max(_num(d.get("protein", d.get("protein_g", 0))), 0.0), 500.0),
+            "carbs": min(max(_num(d.get("carbs", d.get("carbohydrates", d.get("carbs_g", 0)))), 0.0), 800.0),
+            "fat": min(max(_num(d.get("fat", d.get("fat_g", 0))), 0.0), 500.0),
+        })
+    return out[:15]
+
+
+def match_food_db(item):
+    """Find the same food in our own list. Returns the food name or None."""
+    q = re.sub(r"[^a-z0-9 ]", " ", str(item).lower()).strip()
+    q = re.sub(r"\s+", " ", q)
+    if not q:
+        return None
+    for n, f in FOODS.items():
+        if q == n.lower() or q in f["aliases"]:
+            return n
+    best = None
+    for n, f in FOODS.items():
+        for key in [n.lower()] + list(f["aliases"]):
+            if len(key) >= 4 and (key == q or (" " + key + " ") in (" " + q + " ")):
+                if best is None or len(key) > best[0]:
+                    best = (len(key), n)
+    return best[1] if best else None
+
+
+def photo_rows_from_items(items):
+    """Add the food-list match and per-gram numbers to each AI item."""
+    rows = []
+    for it in items:
+        m = match_food_db(it["item"])
+        g = max(it["grams"], 1)
+        if m:
+            k100, p100 = FOODS[m]["kcal"], FOODS[m]["protein"]
+            src = "Food list"
+            name = m
+        else:
+            k100, p100 = it["kcal"] * 100.0 / g, it["protein"] * 100.0 / g
+            src = "AI estimate"
+            name = it["item"]
+        rows.append({"name": name, "grams": g, "k100": k100, "p100": p100,
+                     "c100": it["carbs"] * 100.0 / g, "f100": it["fat"] * 100.0 / g, "src": src})
+    return rows
+
+
+def ask_gemini_photo(img_bytes, mime, api_key):
+    """Returns (text, error). error is a short friendly sentence or ''."""
+    body = {
+        "contents": [{"parts": [
+            {"text": PHOTO_PROMPT},
+            {"inline_data": {"mime_type": mime, "data": base64.b64encode(img_bytes).decode("ascii")}},
+        ]}],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+    data = json.dumps(body).encode("utf-8")
+    models = list(PHOTO_MODELS)
+    try:
+        custom = str(st.secrets["gemini_model"]).strip()
+        if custom:
+            models = [custom] + models
+    except Exception:
+        pass
+    last_err = "Could not read the photo. Please try again."
+    for m in models:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % m
+        req = urllib.request.Request(url, data=data, method="POST",
+                                     headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                js = json.loads(resp.read().decode("utf-8"))
+            parts = js["candidates"][0]["content"]["parts"]
+            return "".join(p.get("text", "") for p in parts), ""
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                last_err = "The AI model was not found. Please tell the app owner."
+                continue
+            if e.code == 429:
+                return "", "The free AI limit is full for now. Please wait a minute and try again."
+            if e.code in (400, 403):
+                return "", "The AI key was not accepted. Please tell the app owner to check it."
+            last_err = "The AI service had a problem (%s). Please try again." % e.code
+        except Exception:
+            last_err = "Could not reach the AI service. Check your internet and try again."
+    return "", last_err
+
 
 # ------------------------------------------------------------ exercise list
 # name | type (S = sets/reps/weight, C = cardio minutes) | aliases
@@ -1628,6 +1804,82 @@ if page == "Home":
 elif page == "Add Food":
     st.title("➕ Add Food")
     st.caption("💬 " + quote_for(1))
+    # ---- photo of the meal (AI)
+    with st.expander("📷 Photo of your meal (AI)", expanded=False):
+        pkey = photo_api_key()
+        if not pkey:
+            st.info("Photo mode is not set up yet. You can still add food by typing below.")
+        else:
+            st.caption("Take a photo or choose one. The AI guesses the foods and amounts.")
+            src_mode = st.radio("Photo from", ["Camera", "Gallery"], horizontal=True, key="photo_src")
+            img = None
+            if src_mode == "Camera":
+                img = st.camera_input("Take a photo of your plate", key="photo_cam")
+            else:
+                img = st.file_uploader("Choose a photo", type=["jpg", "jpeg", "png", "webp"], key="photo_upl")
+            if img is not None:
+                if st.button("🔍 Find the foods", use_container_width=True, key="photo_go"):
+                    raw = img.getvalue()
+                    mime = getattr(img, "type", "") or "image/jpeg"
+                    if len(raw) > 7000000:
+                        st.error("The photo is too big. Please use a smaller photo.")
+                    else:
+                        with st.spinner("Looking at your meal..."):
+                            txt, err = ask_gemini_photo(raw, mime, pkey)
+                        if err:
+                            st.error(err)
+                        else:
+                            its = parse_meal_json(txt)
+                            if not its:
+                                st.warning("I could not find food in this photo. Try a clearer photo, or add the food by typing.")
+                            else:
+                                st.session_state.photo_rows = photo_rows_from_items(its)
+                                st.session_state.photo_ver = st.session_state.get("photo_ver", 0) + 1
+            prows = st.session_state.get("photo_rows") or []
+            if prows:
+                st.markdown("**AI estimate - check the grams**")
+                base = pd.DataFrame([{"Keep": True, "Food": r["name"], "Grams": float(r["grams"])} for r in prows])
+                ed = st.data_editor(base, hide_index=True, use_container_width=True, num_rows="fixed",
+                                    key="photo_edit_%d" % st.session_state.get("photo_ver", 0))
+                calc = []
+                for i, r in enumerate(prows):
+                    try:
+                        keep = bool(ed.iloc[i]["Keep"])
+                        g = float(ed.iloc[i]["Grams"])
+                        nm = str(ed.iloc[i]["Food"]).strip() or r["name"]
+                    except Exception:
+                        keep, g, nm = True, float(r["grams"]), r["name"]
+                    if g != g or g <= 0:
+                        keep = False
+                    if not keep:
+                        continue
+                    g = min(g, 3000.0)
+                    calc.append({"Food": nm, "Grams": round(g), "Calories": round(g * r["k100"] / 100.0),
+                                 "Protein (g)": round(g * r["p100"] / 100.0, 1),
+                                 "Carbs (g)": round(g * r["c100"] / 100.0, 1),
+                                 "Fat (g)": round(g * r["f100"] / 100.0, 1), "From": r["src"]})
+                if calc:
+                    st.dataframe(pd.DataFrame(calc), use_container_width=True, hide_index=True)
+                    st.caption("Untick Keep to remove an item. Change the grams if the AI guessed wrong. "
+                               "These numbers are an AI estimate - check the grams.")
+                    st.subheader("%d calories, %.1f g protein" % (sum(c["Calories"] for c in calc), sum(c["Protein (g)"] for c in calc)))
+                    if st.button("✅ Add to log", use_container_width=True, key="photo_add"):
+                        for c in calc:
+                            new_id = max([r["id"] for r in st.session_state.log] + [0]) + 1
+                            st.session_state.log.append({
+                                "id": new_id, "date": today_str(), "time": now_local().strftime("%H:%M"),
+                                "food": c["Food"], "qty": float(c["Grams"]), "unit": "grams",
+                                "kcal": float(c["Calories"]), "protein": float(c["Protein (g)"]),
+                            })
+                        save_log(st.session_state.log)
+                        st.session_state.photo_rows = []
+                        st.success("Added %d item%s to your day." % (len(calc), "" if len(calc) == 1 else "s"))
+                else:
+                    st.caption("Nothing is ticked. Tick Keep for the foods you ate.")
+                if st.button("Clear", key="photo_clear"):
+                    st.session_state.photo_rows = []
+                    rerun_app()
+    st.markdown("**Or type the food:**")
     q = st.text_input("Type the food name (example: dosa, egg, ragi)").strip().lower()
     names = sorted(FOODS.keys())
     if q:
