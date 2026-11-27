@@ -1,4 +1,4 @@
-# diet_app.py  (version 15)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 17)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import json
@@ -369,6 +369,11 @@ Treadmill|C|
 Stair climbing|C|stairs
 HIIT|C|
 Yoga|C|
+Preacher curl|S|
+Concentration curl|S|
+Incline dumbbell curl|S|
+Close-grip bench press|S|
+Triceps kickback|S|
 """
 
 
@@ -387,40 +392,65 @@ def load_exercises():
 
 EXERCISES = load_exercises()
 
-# Day plans: weekday (0 = Monday ... 6 = Sunday) -> (title, [(exercise, sets, reps or minutes)])
-# Cardio exercises use sets = 1 and the number is MINUTES. Plank number is SECONDS.
-PLAN_DAYS = {
-    "Build muscle": {
-        0: ("Push", [("Bench press", 4, 8), ("Incline bench press", 3, 10), ("Overhead shoulder press", 3, 10), ("Lateral raise", 3, 12), ("Tricep pushdown", 3, 12), ("Push-ups", 2, 15)]),
-        1: ("Pull", [("Lat pulldown", 4, 10), ("Barbell row", 4, 8), ("Seated cable row", 3, 10), ("Rear delt fly", 3, 12), ("Bicep curl", 3, 12), ("Hammer curl", 3, 12)]),
-        2: ("Legs", [("Barbell squat", 4, 8), ("Leg press", 3, 12), ("Romanian deadlift", 3, 10), ("Leg curl", 3, 12), ("Calf raise", 4, 15), ("Plank", 3, 30)]),
-        3: ("Push 2", [("Dumbbell bench press", 4, 10), ("Dumbbell shoulder press", 3, 10), ("Dumbbell fly", 3, 12), ("Front raise", 3, 12), ("Skull crusher", 3, 10), ("Chest dips", 3, 10)]),
-        4: ("Pull 2", [("Pull-ups", 4, 8), ("Dumbbell row", 3, 10), ("T-bar row", 3, 10), ("Shrugs", 3, 12), ("Barbell curl", 3, 10), ("Hammer curl", 3, 12)]),
-        5: ("Legs and abs", [("Goblet squat", 3, 12), ("Lunges", 3, 12), ("Hip thrust", 3, 12), ("Leg extension", 3, 12), ("Crunches", 3, 20), ("Leg raises", 3, 15), ("Plank", 3, 40)]),
-        6: ("Rest day", []),
-    },
-    "Lose fat": {
-        0: ("Full body", [("Squats", 3, 15), ("Push-ups", 3, 12), ("Dumbbell row", 3, 12), ("Lunges", 3, 12), ("Plank", 3, 30), ("Skipping rope", 1, 10)]),
-        1: ("Cardio and abs", [("Running", 1, 30), ("Mountain climbers", 3, 20), ("Crunches", 3, 20), ("Leg raises", 3, 15)]),
-        2: ("Full body", [("Goblet squat", 3, 15), ("Dumbbell shoulder press", 3, 12), ("Lat pulldown", 3, 12), ("Hip thrust", 3, 15), ("Russian twist", 3, 20), ("Cycling", 1, 15)]),
-        3: ("Cardio and abs", [("Cycling", 1, 30), ("Burpees", 3, 10), ("Crunches", 3, 20), ("Plank", 3, 40), ("Leg raises", 3, 15)]),
-        4: ("Full body", [("Romanian deadlift", 3, 12), ("Dumbbell bench press", 3, 12), ("Seated cable row", 3, 12), ("Bicep curl", 3, 12), ("Tricep pushdown", 3, 12), ("Skipping rope", 1, 10)]),
-        5: ("Long cardio", [("Running", 1, 40), ("Walking", 1, 10), ("Mountain climbers", 3, 20), ("Plank", 3, 30)]),
-        6: ("Rest day", []),
-    },
-    "Stay same": {
-        0: ("Upper body", [("Push-ups", 3, 12), ("Dumbbell row", 3, 10), ("Dumbbell shoulder press", 3, 10), ("Lat pulldown", 3, 10), ("Bicep curl", 3, 12), ("Tricep pushdown", 3, 12)]),
-        1: ("Lower body", [("Squats", 3, 12), ("Lunges", 3, 12), ("Leg press", 3, 12), ("Leg curl", 3, 12), ("Calf raise", 3, 15)]),
-        2: ("Cardio and abs", [("Running", 1, 30), ("Crunches", 3, 20), ("Plank", 3, 30), ("Leg raises", 3, 12)]),
-        3: ("Upper body", [("Bench press", 3, 10), ("Pull-ups", 3, 8), ("Overhead shoulder press", 3, 10), ("Seated cable row", 3, 10), ("Hammer curl", 3, 12), ("Skull crusher", 3, 10)]),
-        4: ("Lower body and abs", [("Deadlift", 3, 8), ("Goblet squat", 3, 12), ("Hip thrust", 3, 12), ("Plank", 3, 40), ("Crunches", 3, 20)]),
-        5: ("Cardio or sport", [("Cycling", 1, 30), ("Walking", 1, 15)]),
-        6: ("Rest day", []),
-    },
+# Body-part split, one muscle group per day (0 = Monday ... 6 = Sunday).
+# Each exercise is marked "c" (big compound lift) or "i" (smaller / isolation lift).
+SPLIT = [
+    ("Chest", [("Bench press", "c"), ("Incline bench press", "c"), ("Dumbbell bench press", "c"), ("Dumbbell fly", "i"), ("Cable crossover", "i"), ("Push-ups", "i")]),
+    ("Back", [("Pull-ups", "c"), ("Lat pulldown", "c"), ("Barbell row", "c"), ("Seated cable row", "i"), ("Dumbbell row", "i"), ("T-bar row", "i")]),
+    ("Shoulders", [("Overhead shoulder press", "c"), ("Dumbbell shoulder press", "c"), ("Lateral raise", "i"), ("Front raise", "i"), ("Rear delt fly", "i"), ("Shrugs", "i")]),
+    ("Biceps", [("Barbell curl", "c"), ("Bicep curl", "i"), ("Hammer curl", "i"), ("Incline dumbbell curl", "i"), ("Preacher curl", "i"), ("Concentration curl", "i")]),
+    ("Triceps", [("Close-grip bench press", "c"), ("Skull crusher", "i"), ("Tricep pushdown", "i"), ("Overhead tricep extension", "i"), ("Tricep dips", "i"), ("Triceps kickback", "i")]),
+    ("Legs", [("Barbell squat", "c"), ("Leg press", "c"), ("Romanian deadlift", "c"), ("Lunges", "i"), ("Leg extension", "i"), ("Leg curl", "i"), ("Calf raise", "i")]),
+]
+# Sets and reps by goal: (sets, reps) for "c" and for "i"
+GOAL_SR = {
+    "Build muscle": {"c": (4, 8), "i": (3, 12)},
+    "Lose fat": {"c": (3, 12), "i": (3, 15)},
+    "Stay same": {"c": (3, 10), "i": (3, 12)},
 }
+
+
+def build_plans():
+    plans = {}
+    for goal, sr in GOAL_SR.items():
+        days = {}
+        for d, (title, exs) in enumerate(SPLIT):
+            items = [(nm, sr[kind][0], sr[kind][1]) for nm, kind in exs]
+            if goal == "Lose fat":
+                items.append(("Skipping rope", 1, 10))  # 10 minute cardio finisher
+            days[d] = (title, items)
+        days[6] = ("Rest day", [])
+        plans[goal] = days
+    return plans
+
+
+PLAN_DAYS = build_plans()
+
+GROUPS = [t for t, _ in SPLIT] + ["Cardio"]
+CARDIO_GROUP = [("Running", 1, 20), ("Cycling", 1, 15), ("Skipping rope", 1, 10)]
+
+
+def plan_for_groups(goal, groups):
+    """Exercises for the chosen muscle groups, group by group: list of (name, sets, reps, group)."""
+    sr = GOAL_SR.get(goal, GOAL_SR["Stay same"])
+    out = []
+    for g in GROUPS:
+        if g not in groups:
+            continue
+        if g == "Cardio":
+            for nm, sn, rn in CARDIO_GROUP:
+                out.append((nm, sn, rn, g))
+        else:
+            for title, exs in SPLIT:
+                if title == g:
+                    for nm, kind in exs:
+                        out.append((nm, sr[kind][0], sr[kind][1], g))
+    if goal == "Lose fat" and out and "Cardio" not in groups:
+        out.append(("Skipping rope", 1, 10, "Cardio"))  # 10 minute cardio finisher
+    return out
 PLAN_TIPS = {
-    "Build muscle": "Tip: Add a little weight when it feels easy. Eat enough protein and sleep 7-8 hours.",
-    "Lose fat": "Tip: Keep rests short. Stay a bit under your calorie target and walk every day.",
+    "Build muscle": "Tip: One muscle group each day. Add a little weight when it feels easy. Eat enough protein and sleep 7-8 hours.",
+    "Lose fat": "Tip: Same split with lighter weight, more reps and a 10 minute skipping finisher. Keep rests short and stay a bit under your calorie target.",
     "Stay same": "Tip: Keep it regular. Eat at your calorie target.",
 }
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -437,6 +467,11 @@ def day_plan(goal, weekday):
 # Each exercise has 2 pictures (start and end). We flip between them to make a small animation.
 IMG_BASE = "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/"
 GIF_IDS = {
+    "Preacher curl": "Preacher_Curl",
+    "Concentration curl": "Concentration_Curls",
+    "Incline dumbbell curl": "Incline_Dumbbell_Curl",
+    "Close-grip bench press": "Close-Grip_Barbell_Bench_Press",
+    "Triceps kickback": "Tricep_Dumbbell_Kickback",
     "Push-ups": "Pushups",
     "Incline push-ups": "Incline_Push-Up",
     "Pull-ups": "Pullups",
@@ -878,6 +913,7 @@ def switch_user():
     st.session_state.page = "Home"
     st.session_state.guide_started = False
     st.session_state.guide_idx = 0
+    st.session_state.pop("mg_pick", None)
     write_user_param("")
 
 
@@ -931,6 +967,7 @@ if st.session_state.loaded_slug != slug:
     st.session_state.celebrated = False
     st.session_state.guide_started = False
     st.session_state.guide_idx = 0
+    st.session_state.pop("mg_pick", None)
     st.session_state.loaded_slug = slug
     st.session_state.save_ok = True
     st.session_state.page = "Home"
@@ -1266,33 +1303,53 @@ elif page == "Workout":
         st.session_state.guide_date = today_str()
         st.session_state.guide_started = False
         st.session_state.guide_idx = 0
+        st.session_state.pop("mg_pick", None)
 
     weekday = now_local().weekday()
-    title, items = day_plan(prof["goal"], weekday)
+    title, sched_items = day_plan(prof["goal"], weekday)
+    default_groups = [title] if title in GROUPS else []
+    if "mg_pick" not in st.session_state:
+        st.session_state.mg_pick = default_groups
     st.caption("%s, goal: %s" % (now_local().strftime("%A"), prof["goal"]))
 
     wrows = today_workout()
+    items = st.session_state.get("guide_items", []) if st.session_state.guide_started else []
 
     # ---------- guided workout
-    if not items:
-        st.subheader("😴 Rest day")
-        st.info("Today is a rest day in your plan. Walk, stretch and sleep well. You can still add an exercise below if you want.")
+    if not st.session_state.guide_started:
+        if not sched_items:
+            st.subheader("😴 Rest day")
+            st.info("Today is a rest day in your plan. Walk, stretch and sleep well. You can still pick muscles below and train if you want.")
+        else:
+            st.subheader("Today in your plan: %s" % title)
+        picked = st.multiselect("What do you want to train today? (pick 1 to 3)", GROUPS, key="mg_pick")
+        chosen = [g for g in GROUPS if g in picked]
+        sel_items = plan_for_groups(prof["goal"], chosen)
+        too_many = len(chosen) > 3
+        if too_many:
+            st.warning("Pick at most 3 groups.")
+        if not chosen:
+            st.caption("Pick at least one group to start.")
+        last_g = ""
+        for n, (nm, sn, rn, g) in enumerate(sel_items, 1):
+            if g != last_g:
+                st.markdown("**%s**" % g)
+                last_g = g
+            if is_cardio(nm):
+                st.write("%d. %s - %d min" % (n, nm, rn))
+            else:
+                st.write("%d. %s - %d x %s" % (n, nm, sn, reps_text(nm, rn)))
+        if st.button("▶️ Start workout", use_container_width=True, type="primary", disabled=(not chosen or too_many)):
+            st.session_state.guide_items = sel_items
+            st.session_state.guide_run = st.session_state.get("guide_run", 0) + 1
+            st.session_state.celebrated = False
+            st.session_state.guide_started = True
+            st.session_state.guide_idx = 0
+            rerun_now()
     else:
         total = len(items)
         idx = st.session_state.guide_idx
-        if not st.session_state.guide_started:
-            st.subheader("Today: %s" % title)
-            for n, (nm, sn, rn) in enumerate(items, 1):
-                if is_cardio(nm):
-                    st.write("%d. %s - %d min" % (n, nm, rn))
-                else:
-                    st.write("%d. %s - %d x %s" % (n, nm, sn, reps_text(nm, rn)))
-            if st.button("▶️ Start today's workout", use_container_width=True, type="primary"):
-                st.session_state.celebrated = False
-                st.session_state.guide_started = True
-                st.session_state.guide_idx = 0
-                rerun_now()
-        elif idx >= total:
+        if idx >= total:
             st.success("🎉 Workout complete! Great job.")
             if wrows and not st.session_state.get("celebrated", False):
                 st.session_state.celebrated = True
@@ -1312,12 +1369,13 @@ elif page == "Workout":
                 st.session_state.guide_idx = 0
                 rerun_now()
         else:
-            nm, tsets, treps = items[idx]
+            nm, tsets, treps, grp = items[idx]
             st.subheader("Exercise %d of %d" % (idx + 1, total))
+            st.caption("Muscle group: %s" % grp)
             st.progress(idx / float(total))
             st.markdown("## " + nm)
             exercise_visual(nm)
-            k = "%s_%d_%s" % (today_str(), idx, slug)
+            k = "%s_%d_%d_%s" % (today_str(), st.session_state.get("guide_run", 0), idx, slug)
             if is_cardio(nm):
                 st.write("Target: **%d minutes**" % treps)
                 minutes = st.number_input("Minutes you did", min_value=0, max_value=600, value=int(treps), step=1, key="g_min_" + k)
@@ -1351,7 +1409,7 @@ elif page == "Workout":
                 rerun_now()
 
     # ---------- timer when no exercise is open
-    guide_open = bool(items) and st.session_state.guide_started and st.session_state.guide_idx < len(items)
+    guide_open = st.session_state.guide_started and st.session_state.guide_idx < len(items)
     if not guide_open:
         with st.expander("⏱️ Rest / exercise timer"):
             show_timer("⏱️ Timer", 60, [30, 60, 90, 120])
