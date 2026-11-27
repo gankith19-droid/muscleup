@@ -1,13 +1,20 @@
-# diet_app.py  (version 12)  - run with:  streamlit run diet_app.py
-# 5 pages: Home, Add Food, My Day, Progress, Profile. 
+# diet_app.py  (version 15)  - run with:  streamlit run diet_app.py
+# 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
+
+TZ_HOURS = 5.5  # India time (IST). The cloud server runs on UTC, so we shift it.
+
+
+def now_local():
+    return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=TZ_HOURS)
+
 
 APP_NAME = "MuscleUp"   # <- change the app name here (one place only)
 LOGO_FILE = "logo.png"  # put logo.png in the same folder as this file
@@ -302,12 +309,324 @@ def load_foods():
 
 FOODS = load_foods()
 
+# ------------------------------------------------------------ exercise list
+# name | type (S = sets/reps/weight, C = cardio minutes) | aliases
+EXERCISE_TEXT = """
+Push-ups|S|pushup,pushups,push ups
+Incline push-ups|S|
+Diamond push-ups|S|
+Pull-ups|S|pullup,pullups,pull ups,chin up
+Chin-ups|S|chinup
+Bench press|S|chest press,flat bench
+Incline bench press|S|incline press
+Dumbbell bench press|S|db press
+Dumbbell fly|S|chest fly,fly
+Cable crossover|S|cable fly
+Chest dips|S|dips
+Overhead shoulder press|S|shoulder press,military press,ohp
+Dumbbell shoulder press|S|db shoulder press
+Lateral raise|S|side raise
+Front raise|S|
+Rear delt fly|S|reverse fly
+Shrugs|S|
+Bicep curl|S|bicep curls,curls,dumbbell curl
+Hammer curl|S|
+Barbell curl|S|
+Tricep pushdown|S|tricep,triceps
+Skull crusher|S|
+Overhead tricep extension|S|tricep extension
+Tricep dips|S|bench dips
+Lat pulldown|S|pulldown
+Barbell row|S|bent over row,row
+Seated cable row|S|cable row
+Dumbbell row|S|one arm row
+T-bar row|S|
+Deadlift|S|
+Romanian deadlift|S|rdl
+Squats|S|squat,bodyweight squat
+Barbell squat|S|back squat
+Goblet squat|S|
+Front squat|S|
+Leg press|S|
+Lunges|S|lunge,walking lunge
+Bulgarian split squat|S|split squat
+Leg extension|S|
+Leg curl|S|hamstring curl
+Hip thrust|S|glute bridge
+Calf raise|S|calves
+Plank|S|plank seconds
+Crunches|S|crunch,sit ups,situps
+Leg raises|S|
+Russian twist|S|
+Mountain climbers|S|
+Burpees|S|
+Running|C|run,jogging,jog
+Walking|C|walk
+Cycling|C|cycle,bicycle
+Skipping rope|C|skipping,jump rope
+Swimming|C|swim
+Treadmill|C|
+Stair climbing|C|stairs
+HIIT|C|
+Yoga|C|
+"""
+
+
+def load_exercises():
+    ex = {}
+    for line in EXERCISE_TEXT.strip().splitlines():
+        p = line.split("|")
+        if len(p) < 2:
+            continue
+        al = []
+        if len(p) > 2:
+            al = [a.strip().lower() for a in p[2].split(",") if a.strip()]
+        ex[p[0].strip()] = {"cardio": p[1].strip() == "C", "aliases": al}
+    return ex
+
+
+EXERCISES = load_exercises()
+
+# Day plans: weekday (0 = Monday ... 6 = Sunday) -> (title, [(exercise, sets, reps or minutes)])
+# Cardio exercises use sets = 1 and the number is MINUTES. Plank number is SECONDS.
+PLAN_DAYS = {
+    "Build muscle": {
+        0: ("Push", [("Bench press", 4, 8), ("Incline bench press", 3, 10), ("Overhead shoulder press", 3, 10), ("Lateral raise", 3, 12), ("Tricep pushdown", 3, 12), ("Push-ups", 2, 15)]),
+        1: ("Pull", [("Lat pulldown", 4, 10), ("Barbell row", 4, 8), ("Seated cable row", 3, 10), ("Rear delt fly", 3, 12), ("Bicep curl", 3, 12), ("Hammer curl", 3, 12)]),
+        2: ("Legs", [("Barbell squat", 4, 8), ("Leg press", 3, 12), ("Romanian deadlift", 3, 10), ("Leg curl", 3, 12), ("Calf raise", 4, 15), ("Plank", 3, 30)]),
+        3: ("Push 2", [("Dumbbell bench press", 4, 10), ("Dumbbell shoulder press", 3, 10), ("Dumbbell fly", 3, 12), ("Front raise", 3, 12), ("Skull crusher", 3, 10), ("Chest dips", 3, 10)]),
+        4: ("Pull 2", [("Pull-ups", 4, 8), ("Dumbbell row", 3, 10), ("T-bar row", 3, 10), ("Shrugs", 3, 12), ("Barbell curl", 3, 10), ("Hammer curl", 3, 12)]),
+        5: ("Legs and abs", [("Goblet squat", 3, 12), ("Lunges", 3, 12), ("Hip thrust", 3, 12), ("Leg extension", 3, 12), ("Crunches", 3, 20), ("Leg raises", 3, 15), ("Plank", 3, 40)]),
+        6: ("Rest day", []),
+    },
+    "Lose fat": {
+        0: ("Full body", [("Squats", 3, 15), ("Push-ups", 3, 12), ("Dumbbell row", 3, 12), ("Lunges", 3, 12), ("Plank", 3, 30), ("Skipping rope", 1, 10)]),
+        1: ("Cardio and abs", [("Running", 1, 30), ("Mountain climbers", 3, 20), ("Crunches", 3, 20), ("Leg raises", 3, 15)]),
+        2: ("Full body", [("Goblet squat", 3, 15), ("Dumbbell shoulder press", 3, 12), ("Lat pulldown", 3, 12), ("Hip thrust", 3, 15), ("Russian twist", 3, 20), ("Cycling", 1, 15)]),
+        3: ("Cardio and abs", [("Cycling", 1, 30), ("Burpees", 3, 10), ("Crunches", 3, 20), ("Plank", 3, 40), ("Leg raises", 3, 15)]),
+        4: ("Full body", [("Romanian deadlift", 3, 12), ("Dumbbell bench press", 3, 12), ("Seated cable row", 3, 12), ("Bicep curl", 3, 12), ("Tricep pushdown", 3, 12), ("Skipping rope", 1, 10)]),
+        5: ("Long cardio", [("Running", 1, 40), ("Walking", 1, 10), ("Mountain climbers", 3, 20), ("Plank", 3, 30)]),
+        6: ("Rest day", []),
+    },
+    "Stay same": {
+        0: ("Upper body", [("Push-ups", 3, 12), ("Dumbbell row", 3, 10), ("Dumbbell shoulder press", 3, 10), ("Lat pulldown", 3, 10), ("Bicep curl", 3, 12), ("Tricep pushdown", 3, 12)]),
+        1: ("Lower body", [("Squats", 3, 12), ("Lunges", 3, 12), ("Leg press", 3, 12), ("Leg curl", 3, 12), ("Calf raise", 3, 15)]),
+        2: ("Cardio and abs", [("Running", 1, 30), ("Crunches", 3, 20), ("Plank", 3, 30), ("Leg raises", 3, 12)]),
+        3: ("Upper body", [("Bench press", 3, 10), ("Pull-ups", 3, 8), ("Overhead shoulder press", 3, 10), ("Seated cable row", 3, 10), ("Hammer curl", 3, 12), ("Skull crusher", 3, 10)]),
+        4: ("Lower body and abs", [("Deadlift", 3, 8), ("Goblet squat", 3, 12), ("Hip thrust", 3, 12), ("Plank", 3, 40), ("Crunches", 3, 20)]),
+        5: ("Cardio or sport", [("Cycling", 1, 30), ("Walking", 1, 15)]),
+        6: ("Rest day", []),
+    },
+}
+PLAN_TIPS = {
+    "Build muscle": "Tip: Add a little weight when it feels easy. Eat enough protein and sleep 7-8 hours.",
+    "Lose fat": "Tip: Keep rests short. Stay a bit under your calorie target and walk every day.",
+    "Stay same": "Tip: Keep it regular. Eat at your calorie target.",
+}
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+TIMED = ("Plank",)
+
+
+def day_plan(goal, weekday):
+    plans = PLAN_DAYS.get(goal, PLAN_DAYS["Stay same"])
+    return plans.get(weekday, ("Rest day", []))
+
+
+# ------------------------------------------------------------ animations
+# Pictures come from the free "free-exercise-db" project on GitHub (public domain, no sign-in).
+# Each exercise has 2 pictures (start and end). We flip between them to make a small animation.
+IMG_BASE = "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/"
+GIF_IDS = {
+    "Push-ups": "Pushups",
+    "Incline push-ups": "Incline_Push-Up",
+    "Pull-ups": "Pullups",
+    "Chin-ups": "Chin-Up",
+    "Bench press": "Barbell_Bench_Press_-_Medium_Grip",
+    "Incline bench press": "Barbell_Incline_Bench_Press_-_Medium_Grip",
+    "Dumbbell bench press": "Dumbbell_Bench_Press",
+    "Dumbbell fly": "Dumbbell_Flyes",
+    "Cable crossover": "Cable_Crossover",
+    "Chest dips": "Dips_-_Chest_Version",
+    "Overhead shoulder press": "Barbell_Shoulder_Press",
+    "Dumbbell shoulder press": "Dumbbell_Shoulder_Press",
+    "Lateral raise": "Side_Lateral_Raise",
+    "Front raise": "Front_Dumbbell_Raise",
+    "Rear delt fly": "Reverse_Flyes",
+    "Shrugs": "Dumbbell_Shrug",
+    "Bicep curl": "Dumbbell_Bicep_Curl",
+    "Hammer curl": "Hammer_Curls",
+    "Barbell curl": "Barbell_Curl",
+    "Tricep pushdown": "Triceps_Pushdown",
+    "Skull crusher": "EZ-Bar_Skullcrusher",
+    "Overhead tricep extension": "Cable_Rope_Overhead_Triceps_Extension",
+    "Tricep dips": "Bench_Dips",
+    "Lat pulldown": "Wide-Grip_Lat_Pulldown",
+    "Barbell row": "Bent_Over_Barbell_Row",
+    "Seated cable row": "Seated_Cable_Rows",
+    "Dumbbell row": "One-Arm_Dumbbell_Row",
+    "T-bar row": "T-Bar_Row_with_Handle",
+    "Deadlift": "Barbell_Deadlift",
+    "Romanian deadlift": "Romanian_Deadlift",
+    "Squats": "Bodyweight_Squat",
+    "Barbell squat": "Barbell_Squat",
+    "Goblet squat": "Goblet_Squat",
+    "Front squat": "Front_Barbell_Squat",
+    "Leg press": "Leg_Press",
+    "Lunges": "Dumbbell_Lunges",
+    "Bulgarian split squat": "Split_Squat_with_Dumbbells",
+    "Leg extension": "Leg_Extensions",
+    "Leg curl": "Lying_Leg_Curls",
+    "Hip thrust": "Barbell_Hip_Thrust",
+    "Calf raise": "Standing_Calf_Raises",
+    "Plank": "Plank",
+    "Crunches": "Crunches",
+    "Leg raises": "Flat_Bench_Lying_Leg_Raise",
+    "Russian twist": "Russian_Twist",
+    "Mountain climbers": "Mountain_Climbers",
+    "Running": "Running_Treadmill",
+    "Walking": "Walking_Treadmill",
+    "Cycling": "Bicycling",
+    "Skipping rope": "Rope_Jumping",
+    "Treadmill": "Jogging_Treadmill",
+    "Stair climbing": "Stairmaster",
+}
+
+CUES = {
+    "Diamond push-ups": "Hands close together under your chest, thumbs and fingers make a diamond. Lower your chest to your hands, then push up.",
+    "Burpees": "Squat down, jump your feet back, do a push-up, jump your feet in, then jump up with arms overhead.",
+    "Swimming": "Swim steady laps. Breathe calmly and keep a smooth rhythm.",
+    "HIIT": "Go hard for 30 seconds (jumping jacks, high knees, fast feet), then rest 30 seconds. Repeat.",
+    "Yoga": "Move slowly. Breathe in and out deeply. Do not force any stretch.",
+}
+
+
+def exercise_visual(name):
+    """Show the two-picture animation, or a text cue if we have no picture."""
+    gid = GIF_IDS.get(name)
+    if gid:
+        a = IMG_BASE + gid + "/0.jpg"
+        b = IMG_BASE + gid + "/1.jpg"
+        html = (
+            "<style>"
+            ".mu-anim{position:relative;max-width:340px;margin:0 auto 10px auto;border-radius:12px;overflow:hidden;background:#fff}"
+            ".mu-anim img{width:100%;display:block}"
+            ".mu-anim img.mu-b{position:absolute;top:0;left:0;opacity:0;animation:mu-flip 1.8s infinite}"
+            "@keyframes mu-flip{0%,45%{opacity:0}50%,95%{opacity:1}100%{opacity:0}}"
+            "</style>"
+            "<div class='mu-anim'><img src='" + a + "' alt='start'><img class='mu-b' src='" + b + "' alt='end'></div>"
+        )
+        try:
+            st.markdown(html, unsafe_allow_html=True)
+            return
+        except Exception:
+            pass
+    cue = CUES.get(name, "Keep your back straight, move slowly and breathe.")
+    st.info("💡 How to: " + cue)
+
+
+TIMER_HTML = """
+<div id="mu" style="font-family:Arial,sans-serif;text-align:center;border-radius:14px;padding:12px;background:#1a1f2b;color:#fafafa">
+  <div style="font-size:16px;font-weight:bold;margin-bottom:4px">__TITLE__</div>
+  <div id="t" style="font-size:64px;font-weight:800;line-height:1.1">00:00</div>
+  <div id="msg" style="min-height:22px;font-size:16px;margin:4px 0"></div>
+  <div id="presets" style="margin:6px 0"></div>
+  <div style="margin:6px 0">
+    <input id="c" type="number" min="1" max="3600" placeholder="seconds" style="width:90px;font-size:16px;padding:6px;background:#0e1117;color:#fafafa;border:1px solid #555;border-radius:6px">
+    <button id="setc" style="font-size:16px;padding:8px 12px;background:#2a3142;color:#fafafa;border:1px solid #555;border-radius:8px">Set</button>
+  </div>
+  <div>
+    <button id="go" style="font-size:20px;padding:12px 22px;background:#22c55e;color:#06210f;border:0;border-radius:10px;font-weight:bold">▶ Start</button>
+    <button id="rs" style="font-size:20px;padding:12px 16px;border:0;border-radius:10px;background:#2a3142;color:#fafafa">↺</button>
+  </div>
+</div>
+<script>
+var PRESETS = __PRESETS__;
+var total = __DEFAULT__, left = total, endAt = 0, timer = null, ctx = null;
+var $ = function(i){return document.getElementById(i);};
+function fmt(s){var m=Math.floor(s/60), r=s%60; return (m<10?"0":"")+m+":"+(r<10?"0":"")+r;}
+function show(){ $("t").textContent = fmt(left); }
+function beep(f, d, when){
+  try{
+    var o=ctx.createOscillator(), g=ctx.createGain();
+    o.frequency.value=f; o.connect(g); g.connect(ctx.destination);
+    g.gain.value=0.4; o.start(ctx.currentTime+when); o.stop(ctx.currentTime+when+d);
+  }catch(e){}
+}
+function done(){
+  clearInterval(timer); timer=null; left=0; show();
+  $("go").textContent="▶ Start";
+  $("msg").textContent="⏰ Time is up!";
+  $("mu").style.background="#7a1f1f";
+  beep(880,0.25,0); beep(880,0.25,0.4); beep(1175,0.5,0.8);
+  try{ if(navigator.vibrate) navigator.vibrate([300,150,300,150,600]); }catch(e){}
+  setTimeout(function(){ $("mu").style.background="#1a1f2b"; }, 4000);
+}
+function tick(){
+  left = Math.max(0, Math.round((endAt - Date.now())/1000));
+  show();
+  if(left<=0){ done(); }
+}
+function start(){
+  if(!ctx){ try{ ctx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  if(ctx && ctx.resume){ try{ ctx.resume(); }catch(e){} }
+  if(left<=0) left=total;
+  endAt = Date.now() + left*1000;
+  $("msg").textContent="";
+  $("mu").style.background="#1a1f2b";
+  $("go").textContent="⏸ Pause";
+  clearInterval(timer); timer=setInterval(tick, 250); tick();
+}
+function pause(){ clearInterval(timer); timer=null; $("go").textContent="▶ Start"; }
+function setTotal(n){ pause(); total=n; left=n; $("msg").textContent=""; $("mu").style.background="#1a1f2b"; show(); }
+$("go").onclick=function(){ if(timer){ pause(); } else { start(); } };
+$("rs").onclick=function(){ setTotal(total); };
+$("setc").onclick=function(){ var v=parseInt($("c").value,10); if(v>0){ setTotal(v); } };
+PRESETS.forEach(function(p){
+  var b=document.createElement("button");
+  b.textContent = p>=120 && p%60==0 ? (p/60)+" min" : p+" s";
+  b.style.cssText="font-size:16px;padding:8px 12px;margin:3px;border-radius:8px;border:1px solid #555;background:#2a3142;color:#fafafa";
+  b.onclick=function(){ setTotal(p); };
+  $("presets").appendChild(b);
+});
+show();
+</script>
+"""
+
+
+def timer_html(title, default_seconds, presets):
+    presets = sorted(set(int(p) for p in presets if int(p) > 0))
+    return (
+        TIMER_HTML.replace("__TITLE__", title)
+        .replace("__DEFAULT__", str(int(default_seconds)))
+        .replace("__PRESETS__", json.dumps(presets))
+    )
+
+
+def show_timer(title, default_seconds, presets):
+    """Timer runs in the browser (no page reloads). Beeps and vibrates when done."""
+    html = timer_html(title, default_seconds, presets)
+    try:
+        if hasattr(st, "iframe"):
+            st.iframe(html, height=310)
+        else:
+            import streamlit.components.v1 as components
+
+            components.html(html, height=310)
+    except Exception:
+        st.info("Timer is not available here. Use your phone clock: %d seconds." % int(default_seconds))
+
+
 # --------------------------------------------------------------- saving data
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # These three paths are set for the current user right after the "Who are you?" screen.
 PROFILE_FILE = ""
 LOG_FILE = ""
 WEIGHT_FILE = ""
+WORKOUT_FILE = ""
+WATER_FILE = ""
+MEASURE_FILE = ""
+WATER_TARGET = 8  # glasses per day
+WORKOUT_COLS = ["id", "date", "time", "exercise", "sets", "reps", "weight"]
 LOG_COLS = ["id", "date", "time", "food", "qty", "unit", "kcal", "protein"]
 
 DEFAULT_PROFILE = {
@@ -317,6 +636,8 @@ DEFAULT_PROFILE = {
     "weight": 60.0,
     "activity": "Moderate (exercise 3-5 days)",
     "goal": "Build muscle",
+    "target_weight": 0.0,
+    "start_weight": 0.0,
 }
 ACTIVITY = {
     "Low (little exercise)": 1.2,
@@ -384,6 +705,91 @@ def save_log(rows):
         st.session_state.save_ok = False
 
 
+def load_workout():
+    rows = []
+    try:
+        if os.path.exists(WORKOUT_FILE):
+            with open(WORKOUT_FILE, "r", encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    try:
+                        r["id"] = int(r["id"])
+                        r["sets"] = int(float(r["sets"]))
+                        r["reps"] = int(float(r["reps"]))
+                        r["weight"] = float(r["weight"])
+                        rows.append(r)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return rows
+
+
+def save_workout(rows):
+    try:
+        with open(WORKOUT_FILE, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=WORKOUT_COLS, extrasaction="ignore")
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    except Exception:
+        st.session_state.save_ok = False
+
+
+def load_water():
+    water = {}
+    try:
+        if os.path.exists(WATER_FILE):
+            with open(WATER_FILE, "r", encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    try:
+                        water[r["date"]] = int(float(r["glasses"]))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return water
+
+
+def save_water(water):
+    try:
+        with open(WATER_FILE, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["date", "glasses"])
+            w.writeheader()
+            for k in sorted(water.keys()):
+                w.writerow({"date": k, "glasses": water[k]})
+    except Exception:
+        st.session_state.save_ok = False
+
+
+MEASURE_COLS = ["date", "chest", "waist", "arms"]
+
+
+def load_measure():
+    rows = []
+    try:
+        if os.path.exists(MEASURE_FILE):
+            with open(MEASURE_FILE, "r", encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    try:
+                        rows.append({"date": r["date"], "chest": float(r["chest"]), "waist": float(r["waist"]), "arms": float(r["arms"])})
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return rows
+
+
+def save_measure(rows):
+    try:
+        with open(MEASURE_FILE, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=MEASURE_COLS)
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    except Exception:
+        st.session_state.save_ok = False
+
+
 def load_weights():
     rows = []
     try:
@@ -423,7 +829,7 @@ def existing_users():
     users = []
     try:
         for fn in sorted(os.listdir(BASE_DIR)):
-            for pre, ext in (("diet_profile_", ".json"), ("diet_log_", ".csv"), ("diet_weights_", ".csv")):
+            for pre, ext in (("diet_profile_", ".json"), ("diet_log_", ".csv"), ("diet_weights_", ".csv"), ("diet_workout_", ".csv"), ("diet_water_", ".csv"), ("diet_measure_", ".csv")):
                 if fn.startswith(pre) and fn.endswith(ext):
                     slug = fn[len(pre):-len(ext)]
                     if slug and slug not in users:
@@ -470,6 +876,8 @@ def switch_user():
     st.session_state.user = ""
     st.session_state.loaded_slug = ""
     st.session_state.page = "Home"
+    st.session_state.guide_started = False
+    st.session_state.guide_idx = 0
     write_user_param("")
 
 
@@ -509,11 +917,20 @@ slug = make_slug(st.session_state.user)
 PROFILE_FILE = os.path.join(BASE_DIR, "diet_profile_%s.json" % slug)
 LOG_FILE = os.path.join(BASE_DIR, "diet_log_%s.csv" % slug)
 WEIGHT_FILE = os.path.join(BASE_DIR, "diet_weights_%s.csv" % slug)
+WORKOUT_FILE = os.path.join(BASE_DIR, "diet_workout_%s.csv" % slug)
+WATER_FILE = os.path.join(BASE_DIR, "diet_water_%s.csv" % slug)
+MEASURE_FILE = os.path.join(BASE_DIR, "diet_measure_%s.csv" % slug)
 
 if st.session_state.loaded_slug != slug:
     st.session_state.weights = load_weights()
     st.session_state.profile = load_profile()
     st.session_state.log = load_log()
+    st.session_state.workout = load_workout()
+    st.session_state.water = load_water()
+    st.session_state.measure = load_measure()
+    st.session_state.celebrated = False
+    st.session_state.guide_started = False
+    st.session_state.guide_idx = 0
     st.session_state.loaded_slug = slug
     st.session_state.save_ok = True
     st.session_state.page = "Home"
@@ -545,12 +962,79 @@ def bmi_label(b):
 
 
 def today_str():
-    return datetime.now().strftime("%Y-%m-%d")
+    return now_local().strftime("%Y-%m-%d")
 
 
 def today_rows():
     t = today_str()
     return [r for r in st.session_state.log if r["date"] == t]
+
+
+def today_workout():
+    t = today_str()
+    return [r for r in st.session_state.workout if r["date"] == t]
+
+
+QUOTES = [
+    "Small steps every day beat big plans you never start.",
+    "Your body can do it. Convince your mind.",
+    "Sweat now, smile later.",
+    "Do not stop when you are tired. Stop when you are done.",
+    "Discipline is doing it even when you do not feel like it.",
+    "One more rep. That is where change happens.",
+    "Strong is not a size. It is a habit.",
+    "Today's pain is tomorrow's power.",
+    "You do not need to be perfect. You need to show up.",
+    "Eat well, sleep well, train hard, repeat.",
+    "The only bad workout is the one you skipped.",
+    "Progress is slow, but it adds up. Keep going.",
+    "Be stronger than your excuses.",
+    "Your future self is watching. Make them proud.",
+    "Consistency beats motivation. Every time.",
+]
+
+
+def quote_of_the_day():
+    return QUOTES[now_local().timetuple().tm_yday % len(QUOTES)]
+
+
+def goal_status(profile):
+    """Returns (start, current, target, percent) or None if no target is set."""
+    try:
+        target = float(profile.get("target_weight", 0) or 0)
+        current = float(profile.get("weight", 0) or 0)
+        start = float(profile.get("start_weight", 0) or 0)
+    except Exception:
+        return None
+    if target <= 0 or current <= 0:
+        return None
+    if start <= 0:
+        start = current
+    if abs(start - target) < 0.01:
+        pct = 1.0 if abs(current - target) < 0.5 else 0.0
+    else:
+        pct = (start - current) / (start - target)
+    return start, current, target, max(0.0, min(1.0, pct))
+
+
+def add_water(n):
+    t = today_str()
+    cur = st.session_state.water.get(t, 0)
+    st.session_state.water[t] = max(0, min(50, cur + n))
+    save_water(st.session_state.water)
+
+
+def streak_days():
+    """Days in a row (ending today or yesterday) with any food or workout logged."""
+    days = set(r["date"] for r in st.session_state.log) | set(r["date"] for r in st.session_state.workout)
+    day = now_local().date()
+    if day.strftime("%Y-%m-%d") not in days:
+        day = day - timedelta(days=1)
+    n = 0
+    while day.strftime("%Y-%m-%d") in days and n < 3650:
+        n += 1
+        day = day - timedelta(days=1)
+    return n
 
 
 def go(page):
@@ -563,9 +1047,10 @@ PAGES = [
     ("Add Food", "➕ Add"),
     ("My Day", "📋 Day"),
     ("Progress", "📈 Progress"),
+    ("Workout", "🏋️ Workout"),
     ("Profile", "👤 Profile"),
 ]
-cols = st.columns(5)
+cols = st.columns(6)
 for i, (key, label) in enumerate(PAGES):
     cols[i].button(
         label,
@@ -594,7 +1079,8 @@ page = st.session_state.page
 if page == "Home":
     st.title("🏠 Home")
     st.write("Hello, **%s**!" % st.session_state.user)
-    st.caption("Today: " + datetime.now().strftime("%d %B %Y"))
+    st.caption("Today: " + now_local().strftime("%d %B %Y"))
+    st.info("💬 " + quote_of_the_day())
     remaining = target - eaten
     c1, c2 = st.columns(2)
     c1.metric("🔥 Calories eaten", "%d" % round(eaten), "of %d" % round(target), delta_color="off")
@@ -610,6 +1096,32 @@ if page == "Home":
         st.info("Protein left: %d g" % round(ptarget - peaten))
     else:
         st.success("Protein target done! 🎉")
+    st.write("")
+    gs = goal_status(prof)
+    if gs:
+        g_start, g_cur, g_tar, g_pct = gs
+        st.subheader("🎯 Goal: %g kg to %g kg" % (g_cur, g_tar))
+        st.progress(g_pct)
+        if g_pct >= 1.0:
+            st.success("Goal reached! 🏆")
+        else:
+            st.caption("%d%% there (started at %g kg)" % (round(g_pct * 100), g_start))
+    else:
+        st.caption("🎯 Set a target weight in Profile to see your goal bar.")
+    sk = streak_days()
+    if sk > 0:
+        st.subheader("🔥 %d day streak" % sk)
+    else:
+        st.subheader("🔥 No streak yet")
+        st.caption("Log food or a workout today to start your streak.")
+    glasses = st.session_state.water.get(today_str(), 0)
+    st.subheader("💧 Water: %d/%d glasses" % (glasses, WATER_TARGET))
+    st.progress(min(1.0, glasses / float(WATER_TARGET)))
+    w1, w2 = st.columns([3, 1])
+    w1.button("💧 +1 glass", key="water_add", on_click=add_water, args=(1,), use_container_width=True)
+    w2.button("−1", key="water_sub", on_click=add_water, args=(-1,), use_container_width=True)
+    if glasses >= WATER_TARGET:
+        st.success("Water target done! 💦")
     st.write("")
     st.button("➕ Add food now", on_click=go, args=("Add Food",), use_container_width=True)
     st.button("🔄 Not you? Switch user", key="switch_home", on_click=switch_user, use_container_width=True)
@@ -655,7 +1167,7 @@ elif page == "Add Food":
                     {
                         "id": new_id,
                         "date": today_str(),
-                        "time": datetime.now().strftime("%H:%M"),
+                        "time": now_local().strftime("%H:%M"),
                         "food": food_name,
                         "qty": qty,
                         "unit": unit,
@@ -711,6 +1223,212 @@ elif page == "My Day":
                 save_log(st.session_state.log)
                 st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
 
+# ---------------------------------------------------------------- WORKOUT
+elif page == "Workout":
+    st.title("🏋️ Workout")
+
+    def is_cardio(name):
+        return name in EXERCISES and EXERCISES[name]["cardio"]
+
+    def reps_text(name, reps):
+        if is_cardio(name):
+            return "%d min" % reps
+        if name in TIMED:
+            return "%d sec" % reps
+        return str(reps)
+
+    def last_weight(name):
+        for r in reversed(st.session_state.workout):
+            if r["exercise"] == name and r["weight"] > 0:
+                return float(r["weight"])
+        return 0.0
+
+    def save_entry(name, sets_n, reps_n, weight_n):
+        new_id = max([r["id"] for r in st.session_state.workout] + [0]) + 1
+        st.session_state.workout.append(
+            {
+                "id": new_id,
+                "date": today_str(),
+                "time": now_local().strftime("%H:%M"),
+                "exercise": name,
+                "sets": int(sets_n),
+                "reps": int(reps_n),
+                "weight": float(weight_n),
+            }
+        )
+        save_workout(st.session_state.workout)
+
+    def rerun_now():
+        st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+
+    # forget an old guided run when the day changes
+    if st.session_state.get("guide_date") != today_str():
+        st.session_state.guide_date = today_str()
+        st.session_state.guide_started = False
+        st.session_state.guide_idx = 0
+
+    weekday = now_local().weekday()
+    title, items = day_plan(prof["goal"], weekday)
+    st.caption("%s, goal: %s" % (now_local().strftime("%A"), prof["goal"]))
+
+    wrows = today_workout()
+
+    # ---------- guided workout
+    if not items:
+        st.subheader("😴 Rest day")
+        st.info("Today is a rest day in your plan. Walk, stretch and sleep well. You can still add an exercise below if you want.")
+    else:
+        total = len(items)
+        idx = st.session_state.guide_idx
+        if not st.session_state.guide_started:
+            st.subheader("Today: %s" % title)
+            for n, (nm, sn, rn) in enumerate(items, 1):
+                if is_cardio(nm):
+                    st.write("%d. %s - %d min" % (n, nm, rn))
+                else:
+                    st.write("%d. %s - %d x %s" % (n, nm, sn, reps_text(nm, rn)))
+            if st.button("▶️ Start today's workout", use_container_width=True, type="primary"):
+                st.session_state.celebrated = False
+                st.session_state.guide_started = True
+                st.session_state.guide_idx = 0
+                rerun_now()
+        elif idx >= total:
+            st.success("🎉 Workout complete! Great job.")
+            if wrows and not st.session_state.get("celebrated", False):
+                st.session_state.celebrated = True
+                st.balloons()
+            st.subheader("What you did today")
+            if not wrows:
+                st.write("You skipped everything today. That is okay. Try again tomorrow.")
+            for r in wrows:
+                if is_cardio(r["exercise"]):
+                    st.write("✅ %s - %d min" % (r["exercise"], r["reps"]))
+                else:
+                    wtxt = "body weight" if r["weight"] == 0 else "%g kg" % r["weight"]
+                    st.write("✅ %s - %d x %s, %s" % (r["exercise"], r["sets"], reps_text(r["exercise"], r["reps"]), wtxt))
+            if st.button("🔁 Start again", use_container_width=True):
+                st.session_state.celebrated = False
+                st.session_state.guide_started = False
+                st.session_state.guide_idx = 0
+                rerun_now()
+        else:
+            nm, tsets, treps = items[idx]
+            st.subheader("Exercise %d of %d" % (idx + 1, total))
+            st.progress(idx / float(total))
+            st.markdown("## " + nm)
+            exercise_visual(nm)
+            k = "%s_%d_%s" % (today_str(), idx, slug)
+            if is_cardio(nm):
+                st.write("Target: **%d minutes**" % treps)
+                minutes = st.number_input("Minutes you did", min_value=0, max_value=600, value=int(treps), step=1, key="g_min_" + k)
+                g_sets, g_reps, g_wt = 1, int(minutes), 0.0
+            else:
+                st.write("Target: **%d sets x %s**" % (tsets, reps_text(nm, treps)))
+                c1, c2 = st.columns(2)
+                g_sets = c1.number_input("Sets you did", min_value=0, max_value=20, value=int(tsets), step=1, key="g_sets_" + k)
+                g_reps = c2.number_input(
+                    "Seconds in each set" if nm in TIMED else "Reps in each set",
+                    min_value=0, max_value=500, value=int(treps), step=1, key="g_reps_" + k,
+                )
+                g_wt = st.number_input("Weight in kg (0 = body weight)", min_value=0.0, max_value=500.0, value=last_weight(nm), step=2.5, key="g_wt_" + k)
+            if is_cardio(nm):
+                show_timer("⏱️ Exercise timer: " + nm, treps * 60, [treps * 60, 300, 600, 1200])
+            elif nm in TIMED:
+                show_timer("⏱️ Hold timer: " + nm, treps, [treps, 30, 45, 60])
+            else:
+                show_timer("😮‍💨 Rest timer (press Start after your set)", 60, [30, 60, 90, 120])
+            b1, b2 = st.columns(2)
+            if b1.button("✅ Done - next", use_container_width=True, type="primary", key="g_done_" + k):
+                if g_reps > 0 and g_sets > 0:
+                    save_entry(nm, g_sets, g_reps, g_wt)
+                st.session_state.guide_idx = idx + 1
+                rerun_now()
+            if b2.button("⏭️ Skip", use_container_width=True, key="g_skip_" + k):
+                st.session_state.guide_idx = idx + 1
+                rerun_now()
+            if st.button("⏹️ Stop workout", key="g_stop_" + k, use_container_width=True):
+                st.session_state.guide_idx = total
+                rerun_now()
+
+    # ---------- timer when no exercise is open
+    guide_open = bool(items) and st.session_state.guide_started and st.session_state.guide_idx < len(items)
+    if not guide_open:
+        with st.expander("⏱️ Rest / exercise timer"):
+            show_timer("⏱️ Timer", 60, [30, 60, 90, 120])
+
+    # ---------- extra exercise (manual)
+    st.divider()
+    with st.expander("➕ Add extra exercise"):
+        q = st.text_input("Type the exercise name (example: bench, squat, run)", key="wo_q").strip().lower()
+        names = sorted(EXERCISES.keys())
+        if q:
+            hits = [n for n in names if q in n.lower() or any(q in a for a in EXERCISES[n]["aliases"])]
+            words = q.split()
+            if not hits and words:
+                hits = [n for n in names if any(w in n.lower() or any(w in a for a in EXERCISES[n]["aliases"]) for w in words)]
+        else:
+            hits = names
+        if not hits:
+            st.warning("Exercise not found. Try another word.")
+        else:
+            ex_name = st.selectbox("Choose exercise (%d found)" % len(hits), hits, key="wo_ex")
+            if is_cardio(ex_name):
+                minutes = st.number_input("Minutes", min_value=1, max_value=600, value=20, step=1, key="wo_min")
+                sets, reps, wt = 1, int(minutes), 0.0
+            else:
+                c1, c2 = st.columns(2)
+                sets = c1.number_input("Sets", min_value=1, max_value=20, value=3, step=1, key="wo_sets")
+                reps = c2.number_input("Reps in each set", min_value=1, max_value=500, value=10, step=1, key="wo_reps")
+                wt = st.number_input("Weight in kg (0 = body weight)", min_value=0.0, max_value=500.0, value=0.0, step=2.5, key="wo_wt")
+            if st.button("✅ Add to today's workout", use_container_width=True):
+                save_entry(ex_name, sets, reps, wt)
+                st.success("Added: %s" % ex_name)
+                rerun_now()
+
+    # ---------- today's table
+    st.subheader("Today's workout log")
+    wrows = today_workout()
+    if not wrows:
+        st.info("No exercise saved today.")
+    else:
+        df = pd.DataFrame(
+            [
+                {
+                    "Exercise": r["exercise"],
+                    "Sets": "-" if is_cardio(r["exercise"]) else str(r["sets"]),
+                    "Reps": reps_text(r["exercise"], r["reps"]),
+                    "Weight (kg)": "-" if is_cardio(r["exercise"]) else ("Body" if r["weight"] == 0 else "%g" % r["weight"]),
+                }
+                for r in wrows
+            ]
+        )
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        total_sets = sum(r["sets"] for r in wrows if not is_cardio(r["exercise"]))
+        st.caption("%d exercises, %d sets in total" % (len(wrows), total_sets))
+        if st.button("↩️ Undo last exercise", use_container_width=True):
+            last_id = wrows[-1]["id"]
+            st.session_state.workout = [r for r in st.session_state.workout if r["id"] != last_id]
+            save_workout(st.session_state.workout)
+            rerun_now()
+        wlabels = {r["id"]: "%s  %s" % (r["time"], r["exercise"]) for r in wrows}
+        wpick = st.selectbox("Or choose one to delete", list(wlabels.keys()), format_func=lambda i: wlabels[i], key="wo_del")
+        if st.button("🗑️ Delete this exercise", use_container_width=True):
+            st.session_state.workout = [r for r in st.session_state.workout if r["id"] != wpick]
+            save_workout(st.session_state.workout)
+            rerun_now()
+
+    # ---------- weekly plan
+    st.divider()
+    st.subheader("📅 Weekly plan")
+    st.caption("Plan for your goal: %s (change it in Profile)" % prof["goal"])
+    for d in range(7):
+        t, its = day_plan(prof["goal"], d)
+        if its:
+            st.write("**%s - %s:** %s" % (DAY_NAMES[d], t, ", ".join(x[0] for x in its)))
+        else:
+            st.write("**%s - %s**" % (DAY_NAMES[d], t))
+    st.write(PLAN_TIPS.get(prof["goal"], ""))
+
 # --------------------------------------------------------------- PROGRESS
 elif page == "Progress":
     st.title("📈 Progress")
@@ -731,7 +1449,7 @@ elif page == "Progress":
     def last_days(n):
         # last n days including today, missing days = 0
         out = []
-        today = datetime.now().date()
+        today = now_local().date()
         for i in range(n - 1, -1, -1):
             day = (today - timedelta(days=i)).strftime("%Y-%m-%d")
             v = daily.get(day, {"kcal": 0.0, "protein": 0.0})
@@ -739,6 +1457,27 @@ elif page == "Progress":
         return pd.DataFrame(out)
 
     wk = last_days(7)
+    try:
+        best = {}
+        for r in st.session_state.workout:
+            nm_ = r["exercise"]
+            if nm_ in EXERCISES and not EXERCISES[nm_]["cardio"] and r["weight"] > 0:
+                if nm_ not in best or r["weight"] > best[nm_][0]:
+                    best[nm_] = (r["weight"], r["date"])
+        st.subheader("🏆 Personal records")
+        if not best:
+            st.caption("Log a workout with weight to see your best lifts here.")
+        else:
+            for nm_, (wt_, dt_) in sorted(best.items(), key=lambda kv: -kv[1][0]):
+                st.write("**%s:** %g kg  (%s)" % (nm_, wt_, dt_))
+    except Exception:
+        pass
+    try:
+        week_days = set((now_local().date() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7))
+        wo_days = set(r["date"] for r in st.session_state.workout if r["date"] in week_days)
+        st.metric("🏋️ Workouts this week", "%d day%s" % (len(wo_days), "" if len(wo_days) == 1 else "s"))
+    except Exception:
+        pass
     st.subheader("Last 7 days")
     if all_days.empty:
         st.info("No food saved yet. Add food and come back.")
@@ -754,7 +1493,7 @@ elif page == "Progress":
             a2.metric("Average protein", "%d g" % round(avg_p))
         # streak: days in a row (ending today or yesterday) with food logged
         streak = 0
-        day = datetime.now().date()
+        day = now_local().date()
         if day.strftime("%Y-%m-%d") not in daily:
             day = day - timedelta(days=1)
         while day.strftime("%Y-%m-%d") in daily and streak < 3650:
@@ -775,7 +1514,7 @@ elif page == "Progress":
     st.divider()
     st.subheader("⚖️ Body weight")
     w1, w2 = st.columns(2)
-    wdate = w1.date_input("Date", value=datetime.now().date())
+    wdate = w1.date_input("Date", value=now_local().date())
     wval = w2.number_input("Weight (kg)", min_value=25.0, max_value=250.0, value=float(prof["weight"]), step=0.1)
     if st.button("💾 Save weight", use_container_width=True):
         key = wdate.strftime("%Y-%m-%d")
@@ -784,6 +1523,9 @@ elif page == "Progress":
         rows_w.sort(key=lambda r: r["date"])
         st.session_state.weights = rows_w
         save_weights(rows_w)
+        if key == today_str():
+            st.session_state.profile["weight"] = round(float(wval), 1)
+            save_profile(st.session_state.profile)
         st.success("Weight saved for %s" % key)
     ws = sorted(st.session_state.weights, key=lambda r: r["date"])
     if not ws:
@@ -807,6 +1549,39 @@ elif page == "Progress":
             save_weights(st.session_state.weights)
             st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
 
+    st.divider()
+    st.subheader("📏 Body measurements (cm)")
+    m_date = st.date_input("Measurement date", value=now_local().date(), key="m_date")
+    mc1, mc2, mc3 = st.columns(3)
+    m_chest = mc1.number_input("Chest", min_value=0.0, max_value=250.0, value=0.0, step=0.5, key="m_chest")
+    m_waist = mc2.number_input("Waist", min_value=0.0, max_value=250.0, value=0.0, step=0.5, key="m_waist")
+    m_arms = mc3.number_input("Arms", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="m_arms")
+    st.caption("Leave a box at 0 if you did not measure it.")
+    if st.button("💾 Save measurements", use_container_width=True):
+        if m_chest <= 0 and m_waist <= 0 and m_arms <= 0:
+            st.error("Type at least one measurement.")
+        else:
+            mk = m_date.strftime("%Y-%m-%d")
+            rows_m = [r for r in st.session_state.measure if r["date"] != mk]
+            rows_m.append({"date": mk, "chest": float(m_chest), "waist": float(m_waist), "arms": float(m_arms)})
+            rows_m.sort(key=lambda r: r["date"])
+            st.session_state.measure = rows_m
+            save_measure(rows_m)
+            st.success("Saved measurements for %s" % mk)
+    ms = sorted(st.session_state.measure, key=lambda r: r["date"])
+    if not ms:
+        st.info("No measurements saved yet.")
+    else:
+        mm1, mm2, mm3 = st.columns(3)
+        for col, key_, label in ((mm1, "chest", "Chest"), (mm2, "waist", "Waist"), (mm3, "arms", "Arms")):
+            vals = [r[key_] for r in ms if r[key_] > 0]
+            if vals:
+                col.metric(label, "%g cm" % vals[-1], "%+.1f since first" % (vals[-1] - vals[0]), delta_color="off")
+            else:
+                col.metric(label, "-")
+        with st.expander("All measurements"):
+            st.dataframe(pd.DataFrame(ms[::-1]), use_container_width=True, hide_index=True)
+
 # ---------------------------------------------------------------- PROFILE
 else:
     st.title("👤 Profile")
@@ -816,6 +1591,8 @@ else:
     c3, c4 = st.columns(2)
     height = c3.number_input("Height (cm)", min_value=100, max_value=230, value=int(prof["height"]), step=1)
     weight = c4.number_input("Weight (kg)", min_value=25.0, max_value=250.0, value=float(prof["weight"]), step=0.5)
+    tw_default = float(prof.get("target_weight", 0) or 0)
+    tweight = st.number_input("Target weight in kg (0 = no target)", min_value=0.0, max_value=250.0, value=tw_default, step=0.5)
     act_list = list(ACTIVITY.keys())
     activity = st.selectbox("How active are you?", act_list, index=act_list.index(prof["activity"]))
     goal_list = list(GOALS.keys())
@@ -828,7 +1605,17 @@ else:
             "weight": float(weight),
             "activity": activity,
             "goal": goal,
+            "target_weight": float(tweight),
+            "start_weight": float(prof.get("start_weight", 0) or 0),
         }
+        newp = st.session_state.profile
+        if float(tweight) != float(prof.get("target_weight", 0) or 0) or newp["start_weight"] <= 0:
+            newp["start_weight"] = float(weight)  # goal starts from the weight you have now
+        if abs(float(weight) - float(prof["weight"])) > 0.001:
+            todayk = today_str()
+            st.session_state.weights = [r for r in st.session_state.weights if r["date"] != todayk] + [{"date": todayk, "weight": round(float(weight), 1)}]
+            st.session_state.weights.sort(key=lambda r: r["date"])
+            save_weights(st.session_state.weights)
         save_profile(st.session_state.profile)
         st.success("Saved!")
         st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
