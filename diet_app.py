@@ -1,4 +1,4 @@
-# diet_app.py  (version 21)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 23)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import glob
@@ -10,6 +10,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -451,6 +452,117 @@ def photo_rows_from_items(items):
         rows.append({"name": name, "grams": g, "k100": k100, "p100": p100,
                      "c100": it["carbs"] * 100.0 / g, "f100": it["fat"] * 100.0 / g, "src": src})
     return rows
+
+
+# ------------------------------------------------------------ big food database
+DB_FILE = "foods_db.parquet"
+DB_SOURCES = {"IFCT": "Indian Food Composition Tables 2017", "USDA": "USDA FoodData Central",
+              "OFF-IN": "Open Food Facts (India)", "OFF": "Open Food Facts"}
+
+
+@st.cache_resource(show_spinner=False)
+def load_big_db():
+    """Bundled food list (foods_db.parquet next to this file). Returns None if it is missing."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), DB_FILE)
+        if not os.path.exists(path):
+            return None
+        d = pd.read_parquet(path)
+        d["n"] = d["n"].astype(str)
+        d["u"] = d["u"].astype(str)
+        d["s"] = d["s"].astype(str)
+        d["_l"] = d["n"].str.lower()
+        return d
+    except Exception:
+        return None
+
+
+def parse_units(u):
+    out = {}
+    for part in str(u or "").split(","):
+        if "=" in part:
+            k, v = part.rsplit("=", 1)
+            try:
+                if k.strip() and float(v) > 0:
+                    out[k.strip()] = float(v)
+            except Exception:
+                pass
+    return out
+
+
+def search_big_db(q, limit=60):
+    """Fast search: every word typed must appear. Names that start with the text come first."""
+    db = load_big_db()
+    if db is None or not q:
+        return []
+    words = [w for w in re.split(r"\s+", q.lower().strip()) if w]
+    if not words:
+        return []
+    low = db["_l"]
+    mask = low.str.contains(words[0], regex=False)
+    for w in words[1:]:
+        mask &= low.str.contains(w, regex=False)
+    idx = db.index[mask]
+    if len(idx) == 0:
+        return []
+    starts = low.loc[idx].str.startswith(words[0]).to_numpy()
+    first = [i for i, st_ in zip(idx, starts) if st_]
+    rest = [i for i, st_ in zip(idx, starts) if not st_]
+    take = (first + rest)[:limit]
+    out = []
+    for i in take:
+        r = db.loc[i]
+        out.append({"label": r["n"], "kcal": float(r["k"]), "protein": float(r["p"]),
+                    "units": parse_units(r["u"]), "src": r["s"]})
+    return out
+
+
+def search_online(q):
+    """Live search on Open Food Facts. Returns (list, error). Values are per 100 g."""
+    hosts = ["world.openfoodfacts.org", "in.openfoodfacts.org"]
+    err = "Could not reach the online food list. Check your internet and try again."
+    for h in hosts:
+        url = ("https://%s/cgi/search.pl?action=process&json=1&search_simple=1&page_size=25"
+               "&fields=product_name,brands,nutriments,serving_quantity&search_terms=%s"
+               % (h, urllib.parse.quote(q)))
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "MuscleUpApp/1.0 (student diet app)"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                js = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 502, 503, 504):
+                err = "The online food list is busy right now. Please try again in a minute."
+            continue
+        except Exception:
+            continue
+        res = []
+        seen = set()
+        for p in js.get("products", []):
+            nm = str(p.get("product_name") or "").strip()
+            if not nm:
+                continue
+            nu = p.get("nutriments") or {}
+            kc = nu.get("energy-kcal_100g")
+            if kc is None and nu.get("energy_100g") is not None:
+                kc = _num(nu.get("energy_100g")) / 4.184
+            pr = nu.get("proteins_100g")
+            if kc is None or pr is None:
+                continue
+            kc, pr = _num(kc), _num(pr)
+            if not (0 <= kc <= 900 and 0 <= pr <= 100):
+                continue
+            br = str(p.get("brands") or "").split(",")[0].strip()
+            label = nm[:70] if (not br or br.lower() in nm.lower()) else nm[:70] + " - " + br[:30]
+            if label.lower() in seen:
+                continue
+            seen.add(label.lower())
+            units = {}
+            sq = _num(p.get("serving_quantity"), 0)
+            if 3 <= sq <= 1500:
+                units["serving"] = sq
+            res.append({"label": label, "kcal": kc, "protein": pr, "units": units, "src": "Online"})
+        return res, ""
+    return [], err
 
 
 def ask_gemini_photo(img_bytes, mime, api_key):
@@ -1811,6 +1923,9 @@ elif page == "Add Food":
             st.info("Photo mode is not set up yet. You can still add food by typing below.")
         else:
             st.caption("Take a photo or choose one. The AI guesses the foods and amounts.")
+            st.warning("🔒 Privacy: your photo is sent to Google AI to read the food. "
+                       "Google may keep it and may use it to improve its products. "
+                       "Take food-only photos. No people, faces, names or personal papers in the picture.")
             src_mode = st.radio("Photo from", ["Camera", "Gallery"], horizontal=True, key="photo_src")
             img = None
             if src_mode == "Camera":
@@ -1880,20 +1995,55 @@ elif page == "Add Food":
                     st.session_state.photo_rows = []
                     rerun_app()
     st.markdown("**Or type the food:**")
-    q = st.text_input("Type the food name (example: dosa, egg, ragi)").strip().lower()
+    q = st.text_input("Type the food name (example: dosa, egg, maggi, amul)").strip().lower()
     names = sorted(FOODS.keys())
+    opts = []   # each: label, kcal per 100, protein per 100, units
     if q:
         hits = [n for n in names if q in n.lower() or any(q in a for a in FOODS[n]["aliases"])]
-        words = q.split()
+        words = [w for w in q.split() if len(w) >= 3]
         if not hits and words:
             hits = [n for n in names if any(w in n.lower() or any(w in a for a in FOODS[n]["aliases"]) for w in words)]
     else:
         hits = names
-    if not hits:
+    for n in hits:
+        opts.append({"label": n, "kcal": FOODS[n]["kcal"], "protein": FOODS[n]["protein"], "units": FOODS[n]["units"], "src": "MuscleUp list"})
+    have = set(o["label"].lower() for o in opts)
+    big_db = load_big_db()
+    if q:
+        for o in search_big_db(q):
+            if o["label"].lower() not in have:
+                have.add(o["label"].lower())
+                opts.append(o)
+        cache = st.session_state.setdefault("online_cache", {})
+        for o in cache.get(q, []):
+            if o["label"].lower() not in have:
+                have.add(o["label"].lower())
+                opts.append(o)
+        if len(opts) < 6:
+            if q in cache:
+                if not cache[q]:
+                    st.caption("Nothing more found online for this name.")
+            elif st.button("🌐 Search online for more", use_container_width=True, key="online_go"):
+                wait = 3 - (time.time() - st.session_state.get("online_last", 0))
+                if wait > 0:
+                    time.sleep(wait)
+                st.session_state.online_last = time.time()
+                with st.spinner("Searching online..."):
+                    found, oerr = search_online(q)
+                if oerr:
+                    st.warning(oerr)
+                else:
+                    cache[q] = found
+                    rerun_app()
+    elif big_db is not None:
+        st.caption("Type a name to search %s foods and products (Indian foods, brands like Maggi, Amul, Parle)." % format(len(big_db) + len(FOODS), ","))
+    if not opts:
         st.warning("Food not found. Try another word.")
     else:
-        food_name = st.selectbox("Choose food (%d found)" % len(hits), hits)
-        food = FOODS[food_name]
+        pick_i = st.selectbox("Choose food (%d found)" % len(opts), list(range(len(opts))),
+                              format_func=lambda i: opts[i]["label"] if opts[i]["src"] in ("MuscleUp list",) else opts[i]["label"] + "  (" + ("online" if opts[i]["src"] == "Online" else "list") + ")")
+        food_name = opts[pick_i]["label"]
+        food = opts[pick_i]
         own_units = list(food["units"].keys())
         ordered = own_units + ["grams", "ml"]
         c1, c2 = st.columns(2)
@@ -1909,6 +2059,8 @@ elif page == "Add Food":
             st.caption("About %d ml (counted like %d grams)" % (round(qty), round(grams)))
         else:
             st.caption("About %d grams in total" % round(grams))
+        if food["src"] not in ("MuscleUp list", "IFCT", "USDA"):
+            st.caption("Packed food data comes from other people. Check the label if you can.")
         if st.button("✅ Add to my day", use_container_width=True):
             if qty <= 0:
                 st.error("Quantity must be more than 0.")
@@ -1930,6 +2082,7 @@ elif page == "Add Food":
                 st.success("Added: %s" % food_name)
     st.write("")
     st.caption("Today so far: %d calories, %d g protein" % (round(eaten), round(peaten)))
+    st.caption("Food data: Indian Food Composition Tables 2017, USDA FoodData Central, Open Food Facts (ODbL, openfoodfacts.org).")
 
 # ----------------------------------------------------------------- MY DAY
 elif page == "My Day":
