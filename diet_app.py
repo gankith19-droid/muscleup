@@ -1,5 +1,5 @@
-# diet_app.py  (version 10)  - run with:  streamlit run diet_app.py
-# 5 pages: Home, Add Food, My Day, Progress, Profile. Invite-code lock first.
+# diet_app.py  (version 12)  - run with:  streamlit run diet_app.py
+# 5 pages: Home, Add Food, My Day, Progress, Profile. 
 import csv
 import json
 import os
@@ -50,63 +50,6 @@ if not st.session_state.splash_done:
     time.sleep(2.7)
     splash.empty()
     st.session_state.splash_done = True
-
-# ---------------------------------------------------------------- invite lock
-# Codes live ONLY in Streamlit secrets (never in this file):
-#   .streamlit/secrets.toml  ->  invite_codes = ["CODE1", "CODE2"]
-
-
-def get_codes():
-    codes = []
-    try:
-        extra = st.secrets["invite_codes"]
-        if isinstance(extra, str):
-            extra = [extra]
-        codes += [str(c) for c in extra]
-    except Exception:
-        pass
-    return [c.strip().upper() for c in codes if str(c).strip()]
-
-
-if "unlocked" not in st.session_state:
-    st.session_state.unlocked = False
-
-def read_key_param():
-    try:
-        v = st.query_params.get("key", "")
-        if isinstance(v, (list, tuple)):
-            v = v[0] if v else ""
-        return str(v).strip().upper()
-    except Exception:
-        return ""
-
-
-def write_key_param(code):
-    try:
-        st.query_params["key"] = code
-    except Exception:
-        pass  # old Streamlit: just remember for this session
-
-
-if not st.session_state.unlocked:
-    saved_key = read_key_param()
-    if saved_key and saved_key in get_codes():
-        st.session_state.unlocked = True
-
-if not st.session_state.unlocked:
-    st.title("🔒 " + APP_NAME)
-    if not get_codes():
-        st.warning("App locked. Ask the owner for a code.")
-    st.write("This app is invite only. Type your invite code.")
-    code = st.text_input("Invite code", type="password")
-    if st.button("Open the app", use_container_width=True):
-        if code.strip() and code.strip().upper() in get_codes():
-            st.session_state.unlocked = True
-            write_key_param(code.strip().upper())
-            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
-        else:
-            st.error("Wrong code. Ask your friend for the right code.")
-    st.stop()
 
 # ------------------------------------------------------------- food database
 # name | kcal per 100g | protein per 100g | units (unit=grams) | aliases
@@ -361,9 +304,10 @@ FOODS = load_foods()
 
 # --------------------------------------------------------------- saving data
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROFILE_FILE = os.path.join(BASE_DIR, "diet_profile.json")
-LOG_FILE = os.path.join(BASE_DIR, "diet_log.csv")
-WEIGHT_FILE = os.path.join(BASE_DIR, "diet_weights.csv")
+# These three paths are set for the current user right after the "Who are you?" screen.
+PROFILE_FILE = ""
+LOG_FILE = ""
+WEIGHT_FILE = ""
 LOG_COLS = ["id", "date", "time", "food", "qty", "unit", "kcal", "protein"]
 
 DEFAULT_PROFILE = {
@@ -466,15 +410,116 @@ def save_weights(rows):
         st.session_state.save_ok = False
 
 
-if "weights" not in st.session_state:
-    st.session_state.weights = load_weights()
-if "profile" not in st.session_state:
-    st.session_state.profile = load_profile()
-if "log" not in st.session_state:
-    st.session_state.log = load_log()
+# ------------------------------------------------------------ who are you?
+def make_slug(name):
+    out = ""
+    for ch in str(name).strip().lower():
+        out += ch if (ch.isascii() and ch.isalnum()) else "_"
+    out = "_".join([p for p in out.split("_") if p])
+    return out[:30]
+
+
+def existing_users():
+    users = []
+    try:
+        for fn in sorted(os.listdir(BASE_DIR)):
+            for pre, ext in (("diet_profile_", ".json"), ("diet_log_", ".csv"), ("diet_weights_", ".csv")):
+                if fn.startswith(pre) and fn.endswith(ext):
+                    slug = fn[len(pre):-len(ext)]
+                    if slug and slug not in users:
+                        users.append(slug)
+    except Exception:
+        pass
+    return sorted(users)
+
+
+def clean_name(name):
+    return " ".join(str(name).strip().split())[:30]
+
+
+def read_user_param():
+    try:
+        v = st.query_params.get("user", "")
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else ""
+        return clean_name(v)
+    except Exception:
+        return ""
+
+
+def write_user_param(name):
+    try:
+        if name:
+            st.query_params["user"] = name
+        elif "user" in st.query_params:
+            del st.query_params["user"]
+    except Exception:
+        pass  # old Streamlit: person is remembered for this session only
+
+
+def choose_user(name):
+    name = clean_name(name)
+    if not make_slug(name):
+        return False
+    st.session_state.user = name
+    write_user_param(name)
+    return True
+
+
+def switch_user():
+    st.session_state.user = ""
+    st.session_state.loaded_slug = ""
+    st.session_state.page = "Home"
+    write_user_param("")
+
+
+if "user" not in st.session_state:
+    st.session_state.user = ""
+if "loaded_slug" not in st.session_state:
+    st.session_state.loaded_slug = ""
 if "page" not in st.session_state:
     st.session_state.page = "Home"
 
+if not st.session_state.user:
+    remembered = read_user_param()
+    if remembered:
+        choose_user(remembered)
+
+if not st.session_state.user:
+    st.title("👋 " + APP_NAME)
+    st.write("Type your name to start.")
+    typed = st.text_input("Your name")
+    if st.button("Start", use_container_width=True, type="primary"):
+        if choose_user(typed):
+            st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+        else:
+            st.error("Please type your name (letters or numbers).")
+    others = existing_users()
+    if others:
+        st.write("Or pick your name:")
+        for slug in others[:30]:
+            if st.button(slug.replace("_", " ").title(), key="pick_" + slug, use_container_width=True):
+                choose_user(slug.replace("_", " "))
+                st.rerun() if hasattr(st, "rerun") else st.experimental_rerun()
+    st.caption("This is only a name, not a password.")
+    st.stop()
+
+# a user is chosen: point the files at this user and load their data
+slug = make_slug(st.session_state.user)
+PROFILE_FILE = os.path.join(BASE_DIR, "diet_profile_%s.json" % slug)
+LOG_FILE = os.path.join(BASE_DIR, "diet_log_%s.csv" % slug)
+WEIGHT_FILE = os.path.join(BASE_DIR, "diet_weights_%s.csv" % slug)
+
+if st.session_state.loaded_slug != slug:
+    st.session_state.weights = load_weights()
+    st.session_state.profile = load_profile()
+    st.session_state.log = load_log()
+    st.session_state.loaded_slug = slug
+    st.session_state.save_ok = True
+    st.session_state.page = "Home"
+    # make sure this person shows up in the "pick your name" list
+    if not os.path.exists(PROFILE_FILE):
+        save_profile(st.session_state.profile)
 # ------------------------------------------------------------------- numbers
 
 
@@ -548,6 +593,7 @@ page = st.session_state.page
 # -------------------------------------------------------------------- HOME
 if page == "Home":
     st.title("🏠 Home")
+    st.write("Hello, **%s**!" % st.session_state.user)
     st.caption("Today: " + datetime.now().strftime("%d %B %Y"))
     remaining = target - eaten
     c1, c2 = st.columns(2)
@@ -566,6 +612,7 @@ if page == "Home":
         st.success("Protein target done! 🎉")
     st.write("")
     st.button("➕ Add food now", on_click=go, args=("Add Food",), use_container_width=True)
+    st.button("🔄 Not you? Switch user", key="switch_home", on_click=switch_user, use_container_width=True)
 
 # --------------------------------------------------------------- ADD FOOD
 elif page == "Add Food":
@@ -793,4 +840,5 @@ else:
     c7, c8 = st.columns(2)
     c7.metric("🎯 Daily calories", "%d" % round(target))
     c8.metric("💪 Daily protein", "%d g" % round(ptarget))
+    st.button("🔄 Not you? Switch user", key="switch_profile", on_click=switch_user, use_container_width=True)
     st.caption("BMR = calories your body burns at rest. Daily calories = BMR x activity, then goal added or removed. These are estimates.")
