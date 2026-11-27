@@ -1,4 +1,4 @@
-# diet_app.py  (version 23)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 24)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import glob
@@ -565,44 +565,110 @@ def search_online(q):
     return [], err
 
 
-def ask_gemini_photo(img_bytes, mime, api_key):
-    """Returns (text, error). error is a short friendly sentence or ''."""
-    body = {
-        "contents": [{"parts": [
-            {"text": PHOTO_PROMPT},
-            {"inline_data": {"mime_type": mime, "data": base64.b64encode(img_bytes).decode("ascii")}},
-        ]}],
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
-    }
-    data = json.dumps(body).encode("utf-8")
-    models = list(PHOTO_MODELS)
+def _http_detail(e):
+    """Short text about a failed web call, for the small grey line."""
     try:
-        custom = str(st.secrets["gemini_model"]).strip()
+        raw = e.read().decode("utf-8", "ignore")
+        msg = json.loads(raw).get("error", {}).get("message", "")
+    except Exception:
+        msg = ""
+    return ("HTTP %s %s" % (getattr(e, "code", "?"), msg[:160])).strip()
+
+
+def list_gemini_models(api_key):
+    """Ask Google which models this key can use. Returns (names, detail). Flash models first."""
+    url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200"
+    req = urllib.request.Request(url, headers={"x-goog-api-key": api_key})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            js = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return [], _http_detail(e)
+    except Exception as e:
+        return [], "network: %s" % str(e)[:100]
+    names = []
+    for m in js.get("models", []):
+        nm = str(m.get("name", "")).replace("models/", "")
+        if "generateContent" in (m.get("supportedGenerationMethods") or []) and "flash" in nm:
+            names.append(nm)
+
+    def rank(nm):
+        bad = any(w in nm for w in ("preview", "exp", "image", "tts", "audio", "live", "thinking", "native", "robotics", "computer"))
+        ver = re.search(r"(\d+(?:\.\d+)?)", nm)
+        v = float(ver.group(1)) if ver else 0.0
+        return (1 if bad else 0, 1 if "lite" in nm else 0, 0 if "latest" in nm else 1, -v, nm)
+
+    return sorted(set(names), key=rank), ""
+
+
+def ask_gemini_photo(img_bytes, mime, api_key):
+    """Returns (text, error). error is a short friendly sentence or ''.
+    The real reason (HTTP code) is kept in st.session_state.photo_detail for a small grey line."""
+    st.session_state.photo_detail = ""
+    img_part = {"inline_data": {"mime_type": mime, "data": base64.b64encode(img_bytes).decode("ascii")}}
+
+    def make_body(json_mode):
+        gc = {"temperature": 0.2}
+        if json_mode:
+            gc["responseMimeType"] = "application/json"
+        return json.dumps({"contents": [{"parts": [{"text": PHOTO_PROMPT}, img_part]}], "generationConfig": gc}).encode("utf-8")
+
+    models = []
+    try:
+        custom = str(st.secrets["gemini_model"]).strip().replace("models/", "")
         if custom:
-            models = [custom] + models
+            models.append(custom)
     except Exception:
         pass
+    found = st.session_state.get("gemini_models_found")
+    if not found:
+        found, ldetail = list_gemini_models(api_key)
+        if found:
+            st.session_state.gemini_models_found = found
+        elif ldetail.startswith("HTTP 400") or ldetail.startswith("HTTP 403") or ldetail.startswith("HTTP 401"):
+            st.session_state.photo_detail = "Model list: " + ldetail
+            return "", "The AI key was not accepted. Please tell the app owner to check it."
+        elif ldetail:
+            st.session_state.photo_detail = "Model list: " + ldetail
+    for m in list(found or []) + list(PHOTO_MODELS):
+        if m not in models:
+            models.append(m)
     last_err = "Could not read the photo. Please try again."
-    for m in models:
+    details = []
+    for m in models[:6]:
         url = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent" % m
-        req = urllib.request.Request(url, data=data, method="POST",
-                                     headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                js = json.loads(resp.read().decode("utf-8"))
-            parts = js["candidates"][0]["content"]["parts"]
-            return "".join(p.get("text", "") for p in parts), ""
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                last_err = "The AI model was not found. Please tell the app owner."
-                continue
-            if e.code == 429:
-                return "", "The free AI limit is full for now. Please wait a minute and try again."
-            if e.code in (400, 403):
-                return "", "The AI key was not accepted. Please tell the app owner to check it."
-            last_err = "The AI service had a problem (%s). Please try again." % e.code
-        except Exception:
-            last_err = "Could not reach the AI service. Check your internet and try again."
+        for json_mode in (True, False):
+            req = urllib.request.Request(url, data=make_body(json_mode), method="POST",
+                                         headers={"Content-Type": "application/json", "x-goog-api-key": api_key})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    js = json.loads(resp.read().decode("utf-8"))
+                parts = js["candidates"][0]["content"]["parts"]
+                st.session_state.photo_detail = "Model used: %s" % m
+                return "".join(p.get("text", "") for p in parts), ""
+            except urllib.error.HTTPError as e:
+                d = _http_detail(e)
+                details.append("%s: %s" % (m, d))
+                st.session_state.photo_detail = " | ".join(details)[-400:]
+                if e.code == 404:
+                    last_err = "The AI model was not found. Please tell the app owner."
+                    break
+                if e.code == 429:
+                    return "", "The free AI limit is full for now. Please wait a minute and try again."
+                if e.code == 400 and json_mode and ("mime" in d.lower() or "response" in d.lower() or "json" in d.lower()):
+                    continue   # this model does not like JSON mode: try once without it
+                if e.code in (400, 401, 403):
+                    if "api key" in d.lower() or e.code in (401, 403):
+                        return "", "The AI key was not accepted. Please tell the app owner to check it."
+                    last_err = "The AI could not read this photo (%s). Try another photo." % e.code
+                    break
+                last_err = "The AI service had a problem (%s). Please try again." % e.code
+                break
+            except Exception as e:
+                details.append("%s: network %s" % (m, str(e)[:80]))
+                st.session_state.photo_detail = " | ".join(details)[-400:]
+                last_err = "Could not reach the AI service. Check your internet and try again."
+                break
     return "", last_err
 
 
@@ -1943,6 +2009,8 @@ elif page == "Add Food":
                             txt, err = ask_gemini_photo(raw, mime, pkey)
                         if err:
                             st.error(err)
+                            if st.session_state.get("photo_detail"):
+                                st.caption("Details: " + st.session_state.photo_detail)
                         else:
                             its = parse_meal_json(txt)
                             if not its:
