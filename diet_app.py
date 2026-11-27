@@ -1,7 +1,9 @@
-# diet_app.py  (version 19)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 20)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
+import glob
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -17,6 +19,12 @@ def now_local():
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=TZ_HOURS)
 
 
+ADMIN_PIN = "9174"      # <- CHANGE THIS. Owner-only admin PIN. On Streamlit Cloud, better set admin_pin in Settings > Secrets (the GitHub repo is public)
+try:
+    if "admin_pin" in st.secrets:
+        ADMIN_PIN = str(st.secrets["admin_pin"])
+except Exception:
+    pass
 APP_NAME = "MuscleUp"   # <- change the app name here (one place only)
 LOGO_FILE = "logo.png"  # put logo.png in the same folder as this file
 
@@ -1202,6 +1210,103 @@ if "loaded_slug" not in st.session_state:
 if "page" not in st.session_state:
     st.session_state.page = "Home"
 
+# ------------------------------------------------------------------ admin (owner only, read-only)
+def _read_dates(path):
+    out = []
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    d = (r.get("date") or "").strip()
+                    if len(d) == 10:
+                        out.append(d)
+    except Exception:
+        pass
+    return out
+
+
+def admin_stats():
+    slugs = set()
+    for pat, pre in (("diet_profile_*.json", "diet_profile_"), ("diet_pin_*.json", "diet_pin_"),
+                     ("diet_log_*.csv", "diet_log_"), ("diet_workout_*.csv", "diet_workout_")):
+        for p in glob.glob(os.path.join(BASE_DIR, pat)):
+            b = os.path.basename(p)
+            slugs.add(b[len(pre):-(5 if b.endswith(".json") else 4)])
+    today = now_local().date()
+    rows = []
+    for sl in sorted(slugs):
+        name = sl
+        has_pin = False
+        try:
+            with open(pin_path(sl), "r", encoding="utf-8") as f:
+                pr = json.load(f)
+            has_pin = True
+            if pr.get("name"):
+                name = pr["name"]
+        except Exception:
+            pass
+        food = _read_dates(os.path.join(BASE_DIR, "diet_log_%s.csv" % sl))
+        work = _read_dates(os.path.join(BASE_DIR, "diet_workout_%s.csv" % sl))
+        wt = _read_dates(os.path.join(BASE_DIR, "diet_weights_%s.csv" % sl))
+        alld = set(food) | set(work) | set(wt)
+        days = set(food) | set(work)
+        day = today
+        if day.strftime("%Y-%m-%d") not in days:
+            day = day - timedelta(days=1)
+        n = 0
+        while day.strftime("%Y-%m-%d") in days and n < 3650:
+            n += 1
+            day = day - timedelta(days=1)
+        rows.append({"Name": name, "Last active": max(alld) if alld else "-", "Streak (days)": n,
+                     "Workout days": len(set(work)), "Workout entries": len(work),
+                     "Days with food": len(set(food)), "PIN set": "yes" if has_pin else "no"})
+    return rows
+
+
+if st.session_state.get("admin_mode") and not st.session_state.user:
+    st.title("🔒 Admin")
+    if st.session_state.admin_mode == "ask":
+        lock_path = os.path.join(BASE_DIR, "diet_adminlock.json")
+        lk = {"fails": 0, "until": 0}
+        try:
+            with open(lock_path, "r", encoding="utf-8") as f:
+                lk = json.load(f)
+        except Exception:
+            lk = st.session_state.get("admin_lock", lk)
+        left = float(lk.get("until", 0)) - time.time()
+        if left > 0:
+            st.error("Too many tries. Please wait %d minutes." % (int(left // 60) + 1))
+        else:
+            ap = st.text_input("Admin PIN", type="password", max_chars=20, key="admin_pin_in")
+            if st.button("Open admin", type="primary", use_container_width=True):
+                if hmac.compare_digest(str(ap).encode("utf-8"), str(ADMIN_PIN).encode("utf-8")):
+                    lk = {"fails": 0, "until": 0}
+                    st.session_state.admin_mode = "ok"
+                else:
+                    lk["fails"] = int(lk.get("fails", 0)) + 1
+                    if lk["fails"] >= 5:
+                        lk = {"fails": 0, "until": time.time() + 900}
+                    st.session_state.admin_lock = lk
+                    st.session_state.admin_err = True
+                try:
+                    with open(lock_path, "w", encoding="utf-8") as f:
+                        json.dump(lk, f)
+                except Exception:
+                    pass
+                rerun_app()
+            if st.session_state.pop("admin_err", False):
+                st.error("Wrong PIN.")
+        st.button("← Back", key="admin_back", on_click=lambda: st.session_state.update(admin_mode=""))
+        st.stop()
+    # ---- the admin view: read only
+    arows = admin_stats()
+    st.metric("Registered users", len(arows))
+    st.caption("Read only. Shows who has files on this server. On the free cloud, files are wiped on restart.")
+    if arows:
+        st.dataframe(pd.DataFrame(arows), use_container_width=True, hide_index=True)
+    st.button("Close admin", key="admin_close", on_click=lambda: st.session_state.update(admin_mode=""))
+    st.stop()
+
 if not st.session_state.user:
     # a name in the web address only fills in the name. The PIN is still needed once per session.
     if not st.session_state.auth_name:
@@ -1223,6 +1328,7 @@ if not st.session_state.user:
             else:
                 st.error("Please type your name (letters or numbers).")
         st.caption("Your food and workout data is private with your PIN.")
+        st.button("·", key="admin_link", on_click=lambda: st.session_state.update(admin_mode="ask"))
         st.stop()
     # ---- step 2: PIN
     aslug = make_slug(aname)
@@ -1239,7 +1345,7 @@ if not st.session_state.user:
                 st.error("The two PINs are not the same.")
             else:
                 salt = os.urandom(8).hex()
-                write_pin_record(aslug, {"salt": salt, "hash": hash_pin(p1, salt), "fails": 0, "locked_until": 0})
+                write_pin_record(aslug, {"salt": salt, "hash": hash_pin(p1, salt), "fails": 0, "locked_until": 0, "name": aname})
                 choose_user(aname)
                 rerun_app()
         st.caption("Remember this PIN. If you forget it, your data cannot be opened.")
