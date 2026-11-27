@@ -1,4 +1,4 @@
-# diet_app.py  (version 17)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 18)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import json
@@ -374,6 +374,24 @@ Concentration curl|S|
 Incline dumbbell curl|S|
 Close-grip bench press|S|
 Triceps kickback|S|
+Decline push-ups|S|
+Wide push-ups|S|
+Pike push-ups|S|
+Superman|S|
+Table inverted row|S|
+Underhand table row|S|
+Towel row|S|
+Towel curl|S|
+Backpack curl|S|
+Backpack hammer curl|S|
+Backpack overhead extension|S|
+Chair dips|S|
+Wall sit|S|
+Wall handstand hold|S|
+Glute bridge|S|
+Jump squats|S|
+Arm circles|S|
+Push-up to side plank|S|
 """
 
 
@@ -427,10 +445,33 @@ def build_plans():
 PLAN_DAYS = build_plans()
 
 GROUPS = [t for t, _ in SPLIT] + ["Cardio"]
+
+# No-equipment (hostel room) versions: (exercise, sets, reps). Plank, wall sit and wall handstand are in seconds.
+NOGYM = {
+    "Chest": [("Push-ups", 4, 15), ("Wide push-ups", 3, 12), ("Decline push-ups", 3, 12), ("Incline push-ups", 3, 15), ("Diamond push-ups", 3, 10)],
+    "Back": [("Table inverted row", 4, 10), ("Towel row", 3, 12), ("Superman", 3, 15), ("Plank", 3, 30)],
+    "Shoulders": [("Pike push-ups", 4, 10), ("Push-up to side plank", 3, 10), ("Arm circles", 2, 20), ("Wall handstand hold", 3, 20)],
+    "Biceps": [("Towel curl", 3, 15), ("Backpack curl", 4, 12), ("Backpack hammer curl", 3, 12), ("Underhand table row", 3, 10)],
+    "Triceps": [("Chair dips", 4, 12), ("Diamond push-ups", 3, 10), ("Backpack overhead extension", 3, 12), ("Pike push-ups", 3, 10)],
+    "Legs": [("Squats", 4, 20), ("Lunges", 3, 12), ("Jump squats", 3, 12), ("Wall sit", 3, 40), ("Glute bridge", 3, 15), ("Calf raise", 4, 20)],
+}
+TIMED = ("Plank", "Wall sit", "Wall handstand hold")
+
+EX_GROUP = {}
+for _t, _exs in SPLIT:
+    for _n, _k in _exs:
+        EX_GROUP.setdefault(_n, _t)
+for _g, _lst in NOGYM.items():
+    for _n, _a, _b in _lst:
+        EX_GROUP.setdefault(_n, _g)
+for _n, _a, _b in [("Running", 1, 20), ("Cycling", 1, 15), ("Skipping rope", 1, 10)]:
+    EX_GROUP.setdefault(_n, "Cardio")
+COMPOUND = set(n for _t, exs in SPLIT for n, k in exs if k == "c") | set(["Deadlift", "Squats", "Lunges", "Burpees", "Push-ups"])
+
 CARDIO_GROUP = [("Running", 1, 20), ("Cycling", 1, 15), ("Skipping rope", 1, 10)]
 
 
-def plan_for_groups(goal, groups):
+def plan_for_groups(goal, groups, no_gym=False):
     """Exercises for the chosen muscle groups, group by group: list of (name, sets, reps, group)."""
     sr = GOAL_SR.get(goal, GOAL_SR["Stay same"])
     out = []
@@ -439,6 +480,9 @@ def plan_for_groups(goal, groups):
             continue
         if g == "Cardio":
             for nm, sn, rn in CARDIO_GROUP:
+                out.append((nm, sn, rn, g))
+        elif no_gym:
+            for nm, sn, rn in NOGYM.get(g, []):
                 out.append((nm, sn, rn, g))
         else:
             for title, exs in SPLIT:
@@ -454,7 +498,52 @@ PLAN_TIPS = {
     "Stay same": "Tip: Keep it regular. Eat at your calorie target.",
 }
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-TIMED = ("Plank",)
+
+# Beginner starting weight as a fraction of body weight (kg per dumbbell for dumbbell lifts).
+# Kept light on purpose. Exercises not listed here start at body weight (0 kg).
+START_RATIO = {
+    "Bench press": 0.4, "Incline bench press": 0.3, "Dumbbell bench press": 0.15, "Dumbbell fly": 0.06,
+    "Cable crossover": 0.08, "Close-grip bench press": 0.3,
+    "Overhead shoulder press": 0.25, "Dumbbell shoulder press": 0.1, "Lateral raise": 0.04,
+    "Front raise": 0.05, "Rear delt fly": 0.04, "Shrugs": 0.15,
+    "Bicep curl": 0.08, "Hammer curl": 0.08, "Barbell curl": 0.2, "Incline dumbbell curl": 0.06,
+    "Preacher curl": 0.15, "Concentration curl": 0.07,
+    "Tricep pushdown": 0.2, "Skull crusher": 0.15, "Overhead tricep extension": 0.1, "Triceps kickback": 0.04,
+    "Lat pulldown": 0.5, "Barbell row": 0.35, "Seated cable row": 0.4, "Dumbbell row": 0.15, "T-bar row": 0.3,
+    "Deadlift": 0.6, "Romanian deadlift": 0.4, "Barbell squat": 0.5, "Goblet squat": 0.2, "Front squat": 0.35,
+    "Leg press": 1.0, "Leg extension": 0.3, "Leg curl": 0.25, "Hip thrust": 0.5, "Calf raise": 0.4,
+    "Bulgarian split squat": 0.1,
+}
+# Big lower-body lifts go up by 5 kg, everything else by 2.5 kg
+BIG_LIFTS = ("Barbell squat", "Leg press", "Deadlift", "Romanian deadlift", "Front squat", "Hip thrust")
+
+
+def round_to_step(x, step=2.5):
+    return max(0.0, round(x / step) * step)
+
+
+def suggest_weight(name, body_kg, target_sets, target_reps, history, hold_dates=()):
+    """Returns (kg, hint). history = list of past log rows (dicts) for all exercises."""
+    start = round_to_step(START_RATIO.get(name, 0.0) * float(body_kg or 0))
+    past = [r for r in history if r["exercise"] == name]
+    if not past:
+        if START_RATIO.get(name, 0.0) > 0:
+            return start, "Starting weight for your body weight. Start light and keep good form."
+        return 0.0, "Body weight exercise."
+    last = max(past, key=lambda r: (r["date"], r["id"]))
+    lw = float(last["weight"])
+    if lw <= 0:
+        if START_RATIO.get(name, 0.0) > 0:
+            return start, "Starting weight for your body weight. Start light and keep good form."
+        return 0.0, "Body weight exercise."
+    inc = 5.0 if name in BIG_LIFTS else 2.5
+    if last["sets"] >= target_sets and last["reps"] >= target_reps:
+        if last["date"] in hold_dates:
+            return lw, "Holding this weight (your last workout felt too hard)."
+        return lw + inc, "+%g kg from last time (you hit your target)" % inc
+    if last["reps"] < 0.7 * target_reps:
+        return max(0.0, lw - 2.5), "-2.5 kg from last time (target felt too heavy)"
+    return lw, "Same as last time. Hit all your reps first."
 
 
 def day_plan(goal, weekday):
@@ -462,11 +551,128 @@ def day_plan(goal, weekday):
     return plans.get(weekday, ("Rest day", []))
 
 
+# ------------------------------------------------------------ extras
+MET = {"Running": 9.8, "Walking": 3.5, "Cycling": 7.5, "Skipping rope": 11.0, "Swimming": 8.0,
+       "Treadmill": 8.0, "Stair climbing": 8.0, "HIIT": 10.0, "Yoga": 3.0}
+
+
+def estimate_kcal(rows, body_kg):
+    """Rough estimate only. Strength: about 5 kcal per set (7 for big lifts, adjusted by reps).
+    Cardio: MET x body weight x hours."""
+    total = 0.0
+    bw = float(body_kg or 60)
+    for r in rows:
+        nm = r["exercise"]
+        if nm in EXERCISES and EXERCISES[nm]["cardio"]:
+            total += MET.get(nm, 6.0) * bw * (r["reps"] / 60.0)
+        elif nm in TIMED:
+            total += r["sets"] * 4.0
+        else:
+            base = 7.0 if nm in COMPOUND else 5.0
+            factor = max(0.6, min(1.5, r["reps"] / 10.0))
+            total += r["sets"] * base * factor
+    return int(round(total))
+
+
+TIPS = {
+    "Push-ups": "Keep your body in one straight line. Chest goes down to a fist from the floor.",
+    "Incline push-ups": "Hands on a high surface. Keep your body straight and lower your chest slowly.",
+    "Diamond push-ups": "Hands close under your chest. Keep elbows near your body.",
+    "Decline push-ups": "Feet on a low step. Keep your belly tight so your back does not sag.",
+    "Wide push-ups": "Hands wider than shoulders. Lower slowly and keep your core tight.",
+    "Pike push-ups": "Hips high. Lower the top of your head toward the floor, elbows out a little.",
+    "Pull-ups": "Start from a full hang. Pull your chest up and do not swing.",
+    "Chin-ups": "Palms face you. Pull your chin over the bar and lower slowly.",
+    "Bench press": "Keep your back flat on the bench and feet on the floor. Lower the bar to mid chest.",
+    "Incline bench press": "Shoulder blades back. Lower the bar to your upper chest and press up.",
+    "Dumbbell bench press": "Lower the dumbbells to chest level with control. Do not bounce.",
+    "Dumbbell fly": "Slight bend in your elbows. Open your arms wide, then squeeze together.",
+    "Cable crossover": "Small bend in your elbows. Bring your hands together in front of your chest.",
+    "Chest dips": "Lean forward a little and lower until your shoulders are level with your elbows.",
+    "Close-grip bench press": "Hands shoulder width. Keep elbows close and lower to your lower chest.",
+    "Overhead shoulder press": "Tight belly, do not arch your back. Press straight up over your head.",
+    "Dumbbell shoulder press": "Press up and slightly in. Do not lock your elbows hard at the top.",
+    "Lateral raise": "Light weight. Lift your arms to shoulder height, with a small bend in your elbows.",
+    "Front raise": "Lift to shoulder height only. Do not swing your body.",
+    "Rear delt fly": "Bend forward with a flat back. Open your arms and squeeze your shoulder blades.",
+    "Shrugs": "Lift your shoulders straight up to your ears. Do not roll them.",
+    "Bicep curl": "Keep your elbows at your sides. Do not swing your back.",
+    "Hammer curl": "Palms face each other. Keep your elbows still and curl slowly.",
+    "Barbell curl": "Elbows at your sides. Lift with your arms, not your back.",
+    "Incline dumbbell curl": "Let your arms hang back, then curl up slowly with control.",
+    "Preacher curl": "Upper arms flat on the pad. Do not drop the weight at the bottom.",
+    "Concentration curl": "Elbow against your inner thigh. Curl slowly and squeeze at the top.",
+    "Tricep pushdown": "Elbows stay at your sides. Push down until your arms are straight.",
+    "Skull crusher": "Keep upper arms still. Lower the weight toward your forehead, use light weight.",
+    "Overhead tricep extension": "Keep your elbows close to your head. Straighten your arms fully.",
+    "Tricep dips": "Back close to the bench. Lower until your elbows are at 90 degrees.",
+    "Chair dips": "Use a stable chair. Keep your back close to it and lower to 90 degrees.",
+    "Triceps kickback": "Elbow high and still. Straighten your arm back and squeeze.",
+    "Lat pulldown": "Pull the bar to your upper chest. Lean back a little and do not swing.",
+    "Barbell row": "Bend forward with a flat back. Pull the bar to your belly.",
+    "Seated cable row": "Sit tall. Pull the handle to your belly and squeeze your shoulder blades.",
+    "Dumbbell row": "Flat back. Pull the dumbbell to your hip, elbow close to your body.",
+    "T-bar row": "Flat back, chest up. Pull the handle to your chest.",
+    "Table inverted row": "Lie under a sturdy table. Keep your body straight and pull your chest up to the edge.",
+    "Underhand table row": "Same as table row, but palms face you. Pull your chest up, keep your body straight.",
+    "Towel row": "Keep your body in one line and pull with your back, not your arms only.",
+    "Superman": "Lie face down, lift arms and legs together. Hold 1 second and lower slowly.",
+    "Towel curl": "Go slow. Push down with your foot and pull up with your arm.",
+    "Backpack curl": "Elbows at your sides. Curl slowly and do not swing.",
+    "Backpack hammer curl": "Keep your wrist straight and elbow close to your body.",
+    "Backpack overhead extension": "Keep your elbows close to your head. Use a light bag at first.",
+    "Deadlift": "Flat back, bar close to your legs. Push the floor away and stand tall. Start light.",
+    "Romanian deadlift": "Soft knees. Push your hips back and keep your back flat.",
+    "Squats": "Knees follow your toes. Chest up, go down as low as is comfortable.",
+    "Barbell squat": "Chest up, knees follow your toes. Go down until your thighs are parallel. Start light.",
+    "Goblet squat": "Hold the weight at your chest. Sit down between your knees.",
+    "Front squat": "Elbows high, chest up. Sit straight down.",
+    "Leg press": "Do not lock your knees. Lower slowly and keep your back on the seat.",
+    "Lunges": "Take a long step. Lower your back knee toward the floor, front knee over your ankle.",
+    "Bulgarian split squat": "Back foot on a bench. Lower straight down, keep your chest up.",
+    "Leg extension": "Straighten your legs with control. Do not kick up fast.",
+    "Leg curl": "Curl slowly. Do not lift your hips.",
+    "Hip thrust": "Chin tucked, push through your heels and squeeze your glutes at the top.",
+    "Glute bridge": "Push through your heels. Squeeze your glutes at the top.",
+    "Calf raise": "Go all the way up on your toes and lower slowly.",
+    "Jump squats": "Land softly with bent knees. Stop if your knees hurt.",
+    "Wall sit": "Back flat on the wall, knees at 90 degrees. Breathe normally.",
+    "Wall handstand hold": "Skip this if you are new. Never try it without a clear wall and space.",
+    "Plank": "Body in a straight line. Tight belly. Do not let your hips drop.",
+    "Crunches": "Lift your shoulders, not your neck. Breathe out as you come up.",
+    "Leg raises": "Keep your lower back on the floor. Lower your legs slowly.",
+    "Russian twist": "Lean back a little, keep your back straight and turn from your waist.",
+    "Mountain climbers": "Hands under your shoulders, belly tight. Drive your knees fast.",
+    "Burpees": "Move at a pace you can control. Land softly.",
+    "Push-up to side plank": "Keep your body straight as you turn. Move slowly.",
+    "Arm circles": "Small to big circles. Keep your shoulders relaxed.",
+    "Cycling": "Keep a steady pace and sit tall. Drink water.",
+    "Walking": "Walk fast enough to feel warm. Swing your arms.",
+    "Swimming": "Smooth strokes, calm breathing. Do not push through pain.",
+    "Treadmill": "Start slow, hold the rail only if needed, and keep your head up.",
+    "Stair climbing": "Steady pace, full foot on each step. Slow down if you feel dizzy.",
+    "HIIT": "Go hard for short bursts, then rest. Stop if you feel dizzy.",
+    "Yoga": "Move slowly. Never force a stretch.",
+    "Running": "Easy pace where you can still talk. Land softly.",
+    "Skipping rope": "Small jumps on the balls of your feet. Keep your elbows close.",
+}
+GENERIC_TIP = "Move slowly, breathe, and keep your back straight."
+
+
 # ------------------------------------------------------------ animations
 # Pictures come from the free "free-exercise-db" project on GitHub (public domain, no sign-in).
 # Each exercise has 2 pictures (start and end). We flip between them to make a small animation.
 IMG_BASE = "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/"
 GIF_IDS = {
+    "Decline push-ups": "Decline_Push-Up",
+    "Wide push-ups": "Push-Up_Wide",
+    "Superman": "Superman",
+    "Table inverted row": "Inverted_Row",
+    "Underhand table row": "Inverted_Row",
+    "Chair dips": "Bench_Dips",
+    "Jump squats": "Freehand_Jump_Squat",
+    "Arm circles": "Arm_Circles",
+    "Push-up to side plank": "Push_Up_to_Side_Plank",
     "Preacher curl": "Preacher_Curl",
     "Concentration curl": "Concentration_Curls",
     "Incline dumbbell curl": "Incline_Dumbbell_Curl",
@@ -527,6 +733,15 @@ GIF_IDS = {
 }
 
 CUES = {
+    "Pike push-ups": "Start in a push-up position, walk your feet in so your hips go up like an upside-down V. Bend your elbows to lower your head toward the floor, then push back up.",
+    "Towel row": "Loop a towel around a sturdy door handle (door closed). Hold both ends, lean back with straight body, and pull your chest toward the door.",
+    "Towel curl": "Sit or stand, put a towel under one foot and hold the ends. Pull up with your arm while your foot pushes down against it.",
+    "Backpack curl": "Fill a backpack with books. Hold the strap or top handle, elbows at your sides, and curl it up to your shoulder.",
+    "Backpack hammer curl": "Hold a packed backpack by its side handle with palms facing in. Curl it up with your elbow tucked in.",
+    "Backpack overhead extension": "Hold a packed backpack with both hands behind your head. Straighten your arms overhead, then lower slowly.",
+    "Wall sit": "Back flat on a wall, slide down until your knees are at 90 degrees. Hold. Keep your knees over your ankles.",
+    "Wall handstand hold": "Optional and advanced. Only if you can do it safely: kick up against a wall and hold. Skip this if you are new to it.",
+    "Glute bridge": "Lie on your back, knees bent, feet flat. Push through your heels to lift your hips, squeeze, then lower slowly.",
     "Diamond push-ups": "Hands close together under your chest, thumbs and fingers make a diamond. Lower your chest to your hands, then push up.",
     "Burpees": "Squat down, jump your feet back, do a push-up, jump your feet in, then jump up with arms overhead.",
     "Swimming": "Swim steady laps. Breathe calmly and keep a smooth rhythm.",
@@ -659,6 +874,7 @@ LOG_FILE = ""
 WEIGHT_FILE = ""
 WORKOUT_FILE = ""
 WATER_FILE = ""
+RATING_FILE = ""
 MEASURE_FILE = ""
 WATER_TARGET = 8  # glasses per day
 WORKOUT_COLS = ["id", "date", "time", "exercise", "sets", "reps", "weight"]
@@ -796,6 +1012,30 @@ def save_water(water):
         st.session_state.save_ok = False
 
 
+def load_rating():
+    rows = []
+    try:
+        if os.path.exists(RATING_FILE):
+            with open(RATING_FILE, "r", encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    if r.get("date") and r.get("rating"):
+                        rows.append({"date": r["date"], "rating": r["rating"], "groups": r.get("groups", "")})
+    except Exception:
+        pass
+    return rows
+
+
+def save_rating(rows):
+    try:
+        with open(RATING_FILE, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["date", "rating", "groups"])
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    except Exception:
+        st.session_state.save_ok = False
+
+
 MEASURE_COLS = ["date", "chest", "waist", "arms"]
 
 
@@ -864,7 +1104,7 @@ def existing_users():
     users = []
     try:
         for fn in sorted(os.listdir(BASE_DIR)):
-            for pre, ext in (("diet_profile_", ".json"), ("diet_log_", ".csv"), ("diet_weights_", ".csv"), ("diet_workout_", ".csv"), ("diet_water_", ".csv"), ("diet_measure_", ".csv")):
+            for pre, ext in (("diet_profile_", ".json"), ("diet_log_", ".csv"), ("diet_weights_", ".csv"), ("diet_workout_", ".csv"), ("diet_water_", ".csv"), ("diet_measure_", ".csv"), ("diet_rating_", ".csv")):
                 if fn.startswith(pre) and fn.endswith(ext):
                     slug = fn[len(pre):-len(ext)]
                     if slug and slug not in users:
@@ -956,6 +1196,7 @@ WEIGHT_FILE = os.path.join(BASE_DIR, "diet_weights_%s.csv" % slug)
 WORKOUT_FILE = os.path.join(BASE_DIR, "diet_workout_%s.csv" % slug)
 WATER_FILE = os.path.join(BASE_DIR, "diet_water_%s.csv" % slug)
 MEASURE_FILE = os.path.join(BASE_DIR, "diet_measure_%s.csv" % slug)
+RATING_FILE = os.path.join(BASE_DIR, "diet_rating_%s.csv" % slug)
 
 if st.session_state.loaded_slug != slug:
     st.session_state.weights = load_weights()
@@ -964,6 +1205,7 @@ if st.session_state.loaded_slug != slug:
     st.session_state.workout = load_workout()
     st.session_state.water = load_water()
     st.session_state.measure = load_measure()
+    st.session_state.ratings = load_rating()
     st.session_state.celebrated = False
     st.session_state.guide_started = False
     st.session_state.guide_idx = 0
@@ -1028,11 +1270,44 @@ QUOTES = [
     "Be stronger than your excuses.",
     "Your future self is watching. Make them proud.",
     "Consistency beats motivation. Every time.",
+    "Champions train when nobody is watching.",
+    "Nobody gets strong by thinking about it. Move.",
+    "Make today count. Your body keeps score.",
+    "Heavy is a feeling. Strong is a decision.",
+    "Eat like you care. Train like you mean it.",
+    "Slow progress is still progress.",
+    "Earn your rest. Then earn your growth.",
+    "Every rep is a vote for who you want to be.",
+    "You are one workout away from a good mood.",
+    "Fall in love with the work, not just the result.",
+    "Hard work beats talent when talent does not work.",
+    "Your only competition is who you were yesterday.",
+    "Pain is temporary. Pride stays.",
+    "Wake up. Work out. Level up.",
+    "Be proud of every set you finish.",
+]
+
+CELEBRATE = [
+    "BEAST MODE! You finished the whole workout. Be proud!",
+    "Done! That is how champions are built. One more day in the bank.",
+    "Boom! You showed up and did the work. Respect.",
+    "Workout crushed! Eat well, drink water and rest.",
+    "Another brick in the wall. You are getting stronger every day.",
+    "That is the habit that changes bodies. Great job today!",
 ]
 
 
 def quote_of_the_day():
     return QUOTES[now_local().timetuple().tm_yday % len(QUOTES)]
+
+
+def quote_for(salt):
+    """Different line per page or per exercise. Same day gives the same lines."""
+    return QUOTES[(now_local().timetuple().tm_yday + int(salt) * 7) % len(QUOTES)]
+
+
+def celebrate_line():
+    return CELEBRATE[now_local().timetuple().tm_yday % len(CELEBRATE)]
 
 
 def goal_status(profile):
@@ -1166,6 +1441,7 @@ if page == "Home":
 # --------------------------------------------------------------- ADD FOOD
 elif page == "Add Food":
     st.title("➕ Add Food")
+    st.caption("💬 " + quote_for(1))
     q = st.text_input("Type the food name (example: dosa, egg, ragi)").strip().lower()
     names = sorted(FOODS.keys())
     if q:
@@ -1220,6 +1496,7 @@ elif page == "Add Food":
 # ----------------------------------------------------------------- MY DAY
 elif page == "My Day":
     st.title("📋 My Day")
+    st.caption("💬 " + quote_for(2))
     if not rows:
         st.info("You have not added any food today.")
         st.button("➕ Add food", on_click=go, args=("Add Food",), use_container_width=True)
@@ -1274,11 +1551,6 @@ elif page == "Workout":
             return "%d sec" % reps
         return str(reps)
 
-    def last_weight(name):
-        for r in reversed(st.session_state.workout):
-            if r["exercise"] == name and r["weight"] > 0:
-                return float(r["weight"])
-        return 0.0
 
     def save_entry(name, sets_n, reps_n, weight_n):
         new_id = max([r["id"] for r in st.session_state.workout] + [0]) + 1
@@ -1311,6 +1583,8 @@ elif page == "Workout":
     if "mg_pick" not in st.session_state:
         st.session_state.mg_pick = default_groups
     st.caption("%s, goal: %s" % (now_local().strftime("%A"), prof["goal"]))
+    if not st.session_state.guide_started:
+        st.info("💬 " + quote_for(5))
 
     wrows = today_workout()
     items = st.session_state.get("guide_items", []) if st.session_state.guide_started else []
@@ -1323,8 +1597,9 @@ elif page == "Workout":
         else:
             st.subheader("Today in your plan: %s" % title)
         picked = st.multiselect("What do you want to train today? (pick 1 to 3)", GROUPS, key="mg_pick")
+        no_gym = st.checkbox("🏠 No gym today? Use no-equipment exercises (hostel room)", key="no_gym")
         chosen = [g for g in GROUPS if g in picked]
-        sel_items = plan_for_groups(prof["goal"], chosen)
+        sel_items = plan_for_groups(prof["goal"], chosen, no_gym)
         too_many = len(chosen) > 3
         if too_many:
             st.warning("Pick at most 3 groups.")
@@ -1341,6 +1616,7 @@ elif page == "Workout":
                 st.write("%d. %s - %d x %s" % (n, nm, sn, reps_text(nm, rn)))
         if st.button("▶️ Start workout", use_container_width=True, type="primary", disabled=(not chosen or too_many)):
             st.session_state.guide_items = sel_items
+            st.session_state.guide_nogym = bool(no_gym)
             st.session_state.guide_run = st.session_state.get("guide_run", 0) + 1
             st.session_state.celebrated = False
             st.session_state.guide_started = True
@@ -1351,6 +1627,7 @@ elif page == "Workout":
         idx = st.session_state.guide_idx
         if idx >= total:
             st.success("🎉 Workout complete! Great job.")
+            st.markdown("### 🏆 " + celebrate_line())
             if wrows and not st.session_state.get("celebrated", False):
                 st.session_state.celebrated = True
                 st.balloons()
@@ -1363,6 +1640,39 @@ elif page == "Workout":
                 else:
                     wtxt = "body weight" if r["weight"] == 0 else "%g kg" % r["weight"]
                     st.write("✅ %s - %d x %s, %s" % (r["exercise"], r["sets"], reps_text(r["exercise"], r["reps"]), wtxt))
+            if wrows:
+                kc = estimate_kcal(wrows, prof["weight"])
+                st.subheader("🔥 You burned about %d kcal today" % kc)
+                st.caption("Estimate only. Real numbers depend on your body and effort.")
+                grp_list = []
+                for it in items:
+                    if it[3] not in grp_list:
+                        grp_list.append(it[3])
+                grp_key = "|".join(grp_list)
+                st.subheader("How was it?")
+                current = ""
+                for r in st.session_state.ratings:
+                    if r["date"] == today_str() and r["groups"] == grp_key:
+                        current = r["rating"]
+                rc1, rc2, rc3 = st.columns(3)
+                chosen_rating = ""
+                if rc1.button("😄 Easy", key="rate_easy", use_container_width=True):
+                    chosen_rating = "Easy"
+                if rc2.button("👌 Just right", key="rate_ok", use_container_width=True):
+                    chosen_rating = "Just right"
+                if rc3.button("🥵 Too hard", key="rate_hard", use_container_width=True):
+                    chosen_rating = "Too hard"
+                if chosen_rating:
+                    st.session_state.ratings = [r for r in st.session_state.ratings if not (r["date"] == today_str() and r["groups"] == grp_key)]
+                    st.session_state.ratings.append({"date": today_str(), "rating": chosen_rating, "groups": grp_key})
+                    save_rating(st.session_state.ratings)
+                    current = chosen_rating
+                if current == "Too hard":
+                    st.info("Thanks! Got it. Next time I will keep your weights the same for these muscles.")
+                elif current == "Easy":
+                    st.info("Thanks! Got it. If you hit all your reps, weights will keep going up.")
+                elif current == "Just right":
+                    st.info("Thanks! Got it. Perfect level, keep going.")
             if st.button("🔁 Start again", use_container_width=True):
                 st.session_state.celebrated = False
                 st.session_state.guide_started = False
@@ -1372,9 +1682,11 @@ elif page == "Workout":
             nm, tsets, treps, grp = items[idx]
             st.subheader("Exercise %d of %d" % (idx + 1, total))
             st.caption("Muscle group: %s" % grp)
+            st.info("💬 " + quote_for(6 + idx))
             st.progress(idx / float(total))
             st.markdown("## " + nm)
             exercise_visual(nm)
+            st.caption("Form tip: " + TIPS.get(nm, GENERIC_TIP))
             k = "%s_%d_%d_%s" % (today_str(), st.session_state.get("guide_run", 0), idx, slug)
             if is_cardio(nm):
                 st.write("Target: **%d minutes**" % treps)
@@ -1388,7 +1700,20 @@ elif page == "Workout":
                     "Seconds in each set" if nm in TIMED else "Reps in each set",
                     min_value=0, max_value=500, value=int(treps), step=1, key="g_reps_" + k,
                 )
-                g_wt = st.number_input("Weight in kg (0 = body weight)", min_value=0.0, max_value=500.0, value=last_weight(nm), step=2.5, key="g_wt_" + k)
+                if st.session_state.get("guide_nogym", False):
+                    sug, sug_hint = 0.0, "No equipment today."
+                else:
+                    holds = set(
+                        r["date"] for r in st.session_state.get("ratings", [])
+                        if r["rating"] == "Too hard" and grp in r["groups"].split("|")
+                    )
+                    sug, sug_hint = suggest_weight(nm, prof["weight"], tsets, treps, st.session_state.workout, holds)
+                if sug > 0:
+                    st.write("💡 **Suggested: %g kg** - %s" % (sug, sug_hint))
+                else:
+                    st.write("💡 **Suggested: body weight** - %s" % sug_hint)
+                st.caption("General guide only, not coaching. Stop if you feel pain.")
+                g_wt = st.number_input("Weight in kg (0 = body weight)", min_value=0.0, max_value=500.0, value=float(sug), step=2.5, key="g_wt_" + k)
             if is_cardio(nm):
                 show_timer("⏱️ Exercise timer: " + nm, treps * 60, [treps * 60, 300, 600, 1200])
             elif nm in TIMED:
@@ -1490,6 +1815,7 @@ elif page == "Workout":
 # --------------------------------------------------------------- PROGRESS
 elif page == "Progress":
     st.title("📈 Progress")
+    st.caption("💬 " + quote_for(3))
     # one row per day from the whole log
     daily = {}
     for r in st.session_state.log:
@@ -1643,6 +1969,7 @@ elif page == "Progress":
 # ---------------------------------------------------------------- PROFILE
 else:
     st.title("👤 Profile")
+    st.caption("💬 " + quote_for(4))
     c1, c2 = st.columns(2)
     age = c1.number_input("Age (years)", min_value=10, max_value=90, value=int(prof["age"]), step=1)
     gender = c2.selectbox("Gender", ["Male", "Female"], index=0 if prof["gender"] == "Male" else 1)
