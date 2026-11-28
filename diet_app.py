@@ -1,4 +1,4 @@
-# diet_app.py  (version 24)  - run with:  streamlit run diet_app.py
+# diet_app.py  (version 26)  - run with:  streamlit run diet_app.py
 # 6 pages: Home, Add Food, My Day, Progress, Workout, Profile. 
 import csv
 import glob
@@ -462,19 +462,25 @@ DB_SOURCES = {"IFCT": "Indian Food Composition Tables 2017", "USDA": "USDA FoodD
 
 @st.cache_resource(show_spinner=False)
 def load_big_db():
-    """Bundled food list (foods_db.parquet next to this file). Returns None if it is missing."""
-    try:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), DB_FILE)
-        if not os.path.exists(path):
-            return None
-        d = pd.read_parquet(path)
-        d["n"] = d["n"].astype(str)
-        d["u"] = d["u"].astype(str)
-        d["s"] = d["s"].astype(str)
-        d["_l"] = d["n"].str.lower()
-        return d
-    except Exception:
-        return None
+    """Bundled food list. Tries foods_db.parquet, then foods_db.txt (same file, different name).
+    Returns None if neither can be read."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fname in (DB_FILE, "foods_db.txt", "foods_db.parq"):
+        try:
+            path = os.path.join(here, fname)
+            if not os.path.exists(path):
+                continue
+            d = pd.read_parquet(path)
+            if len(d) < 1 or "n" not in d.columns:
+                continue
+            d["n"] = d["n"].astype(str)
+            d["u"] = d["u"].astype(str)
+            d["s"] = d["s"].astype(str)
+            d["_l"] = d["n"].str.lower()
+            return d
+        except Exception:
+            continue
+    return None
 
 
 def parse_units(u):
@@ -2150,7 +2156,7 @@ elif page == "Add Food":
                 st.success("Added: %s" % food_name)
     st.write("")
     st.caption("Today so far: %d calories, %d g protein" % (round(eaten), round(peaten)))
-    st.caption("Food data: Indian Food Composition Tables 2017, USDA FoodData Central, Open Food Facts (ODbL, openfoodfacts.org).")
+    st.caption("Food data: Open Food Facts (ODbL, openfoodfacts.org), USDA FoodData Central (public domain), IFCT 2017 (ICMR-National Institute of Nutrition).")
 
 # ----------------------------------------------------------------- MY DAY
 elif page == "My Day":
