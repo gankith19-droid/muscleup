@@ -1,0 +1,43 @@
+DATA LICENSE - MuscleUp food database
+======================================
+
+This file covers the bundled food data in this repository
+(foods_db.txt / foods_db.parquet). It does NOT cover the app code
+(diet_app.py), which is a separate work.
+
+The bundled food database combines data from three sources:
+
+1. Open Food Facts (India and worldwide)
+   Source: https://openfoodfacts.org
+   License: Open Database License (ODbL) 1.0
+            http://opendatacommons.org/licenses/odbl/1.0/
+   Data (c) Open Food Facts contributors.
+
+2. USDA FoodData Central
+   Source: https://fdc.nal.usda.gov/
+   License: Public domain (CC0 1.0). Not copyrighted.
+   Suggested citation: U.S. Department of Agriculture, Agricultural
+   Research Service. FoodData Central, 2019. fdc.nal.usda.gov.
+
+3. Indian Food Composition Tables 2017 (IFCT 2017)
+   Published by: ICMR-National Institute of Nutrition,
+   Indian Council of Medical Research, Hyderabad, India.
+   Values collected via public community transcriptions on GitHub.
+   Credited here with attribution.
+
+License of the combined database
+--------------------------------
+Because the combined database contains Open Food Facts data, the
+combined database (foods_db.txt / foods_db.parquet) is made available
+under the Open Database License (ODbL) 1.0:
+http://opendatacommons.org/licenses/odbl/1.0/
+
+Any rights in individual contents of the database are licensed under
+the Database Contents License:
+http://opendatacommons.org/licenses/dbcl/1.0/
+
+In plain words: you may copy, use, and build on this food database.
+If you publicly share an adapted version of it, you must credit
+Open Food Facts and offer your adapted database under the ODbL too.
+
+The app itself only displays this data with attribution.
